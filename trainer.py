@@ -3,11 +3,12 @@ import torch.nn as nn
 import json
 
 class ReverseMapTrainer():
-    def __init__(self, settings, generator, discriminator, train_loader, state_dir):
+    def __init__(self, settings, generator, discriminator, train_loader, device, state_dir):
         self.settings = settings
         self.generator = generator
         self.discriminator = discriminator
         self.train_loader = train_loader
+        self.device = device
         self.state_dir = state_dir # at this point directory isn't created yet
 
         self.lr_g = settings['lr_g']
@@ -41,10 +42,11 @@ class ReverseMapTrainer():
         print("Starting training loop...")
         for epoch in range(n_epochs):
             for i, data in enumerate(self.train_loader):
-                real_sequences, _ = data
+                X, _ = data
+                real_sequences = X.to(self.device)
                 batch_size = real_sequences.shape[0]
-                fake_labels = torch.zeros(batch_size * frame_length, dtype=torch.float)
-                real_labels = torch.ones(batch_size * frame_length, dtype=torch.float)
+                fake_labels = torch.zeros(batch_size * frame_length, dtype=torch.float, device=self.device)
+                real_labels = torch.ones(batch_size * frame_length, dtype=torch.float, device=self.device)
 
                 ############
                 # D training
@@ -52,7 +54,7 @@ class ReverseMapTrainer():
 
                 # fake data
                 self.discriminator.zero_grad()
-                z = torch.randn(batch_size, frame_length, zdim)
+                z = torch.randn(batch_size, frame_length, zdim, device=self.device)
                 fake_sequences = self.generator(z)
                 predictions = self.discriminator(fake_sequences.detach()).view(-1)
                 loss_D_fake = criterion(predictions, fake_labels)
@@ -74,7 +76,7 @@ class ReverseMapTrainer():
 
                 # fake data
                 self.generator.zero_grad()
-                z = torch.randn(batch_size, frame_length, zdim)
+                z = torch.randn(batch_size, frame_length, zdim, device=self.device)
                 fake_sequences = self.generator(z)
                 predictions = self.discriminator(fake_sequences).view(-1)
                 loss_G = criterion(predictions, real_labels)

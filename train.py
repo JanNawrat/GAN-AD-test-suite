@@ -36,14 +36,14 @@ if __name__ == '__main__':
     # loading models
     match settings['generator']:
         case 'mad_gan':
-            generator = MAD_GAN_Generator(settings['frame_length'], settings['zdim'])
+            generator = MAD_GAN_Generator(settings['frame_length'], settings['zdim']).to(DEVICE)
         case _:
             print('No generator selected.')
             raise SystemExit(1)
         
     match settings['discriminator']:
         case 'mad_gan':
-            discriminator = MAD_GAN_Discriminator(settings['frame_length'])
+            discriminator = MAD_GAN_Discriminator(settings['frame_length']).to(DEVICE)
         case _:
             print('No discriminator selected.')
             raise SystemExit(1)
@@ -59,7 +59,7 @@ if __name__ == '__main__':
     # initializing trainer:
     match settings['trainer']:
         case 'reverse_map':
-            trainer = ReverseMapTrainer(settings, generator, discriminator, train_loader, STATES_ROOT / args.experiment_name)
+            trainer = ReverseMapTrainer(settings, generator, discriminator, train_loader, DEVICE, STATES_ROOT / args.experiment_name)
         case _:
             print('No trainer selected.')
             raise SystemExit(1)
