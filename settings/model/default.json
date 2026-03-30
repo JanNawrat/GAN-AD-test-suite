@@ -1,0 +1,11 @@
+{
+    "generator": "mad_gan",
+    "discriminator": "mad_gan",
+    "trainer": "reverse_map",
+    "frame_length": 30,
+    "step": 1,
+    "batch_size": 16,
+    "lr_d": 0.0001,
+    "lr-g": 0.0001,
+    "zdim": 1
+}
