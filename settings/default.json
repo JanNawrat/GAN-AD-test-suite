@@ -1,0 +1,15 @@
+{
+    "dataset": "nasa",
+    "isa": "P-1",
+    "sensors": [0],
+    "frame_length": 30,
+    "step": 1,
+    "batch_size": 16,
+    "shuffle": true,
+    "generator": "mad_gan",
+    "discriminator": "mad_gan",
+    "trainer": "reverse_map",
+    "lr_d": 0.0001,
+    "lr_g": 0.0001,
+    "zdim": 1
+}

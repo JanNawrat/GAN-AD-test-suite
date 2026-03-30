@@ -1,9 +1,0 @@
-{
-    "dataset": "nasa",
-    "sensors": [0],
-    "isa": "P-1",
-    "frame_length": 30,
-    "step": 1,
-    "batch_size": 16,
-    "shuffle": true
-}

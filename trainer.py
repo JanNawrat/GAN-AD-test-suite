@@ -3,15 +3,15 @@ import torch.nn as nn
 import json
 
 class ReverseMapTrainer():
-    def __init__(self, model_settings, generator, discriminator, train_loader, state_dir):
-        self.model_settings = model_settings
+    def __init__(self, settings, generator, discriminator, train_loader, state_dir):
+        self.settings = settings
         self.generator = generator
         self.discriminator = discriminator
         self.train_loader = train_loader
         self.state_dir = state_dir # at this point directory isn't created yet
 
-        self.lr_g = model_settings['lr_g']
-        self.lr_d = model_settings['lr_d']
+        self.lr_g = settings['lr_g']
+        self.lr_d = settings['lr_d']
 
     def save_model_checkpoints(self, optimizerG, optimizerD, epoch):
         torch.save(self.generator.state_dict(), self.state_dir / 'generator' / f'G_{epoch}.pth')
@@ -28,8 +28,8 @@ class ReverseMapTrainer():
         G_losses = []
         D_losses = []
         iters = 0
-        frame_length = self.model_settings['frame_length']
-        zdim = self.model_settings['zdim']
+        frame_length = self.settings['frame_length']
+        zdim = self.settings['zdim']
 
         # preparing checkpoint directories
         # at this point the main directory should be created

@@ -4,14 +4,14 @@ import pandas as pd
 from pathlib import Path
 import ast
 
-def NASA_dataloader(dataset_settings, data_root, train=True):
+def NASA_dataloader(settings, data_root, train=True):
     # settings
-    isa = dataset_settings['isa']
-    sensors = dataset_settings['sensors']
-    frame_length = dataset_settings['frame_length']
-    step = dataset_settings['step']
-    batch_size = dataset_settings['batch_size']
-    shuffle = dataset_settings['shuffle']
+    isa = settings['isa']
+    sensors = settings['sensors']
+    frame_length = settings['frame_length']
+    step = settings['step']
+    batch_size = settings['batch_size']
+    shuffle = settings['shuffle']
     # selecting dataset
     if train:
         raw_time_series = np.load(data_root / 'nasa' / 'train' / f'{isa}.npy')[:,sensors].astype(np.float32)
