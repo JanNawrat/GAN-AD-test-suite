@@ -19,7 +19,7 @@ def parse_arguments():
     parser.add_argument('experiment_name', type=str)
     parser.add_argument('--model-settings', type=str, default='default')
     parser.add_argument('--dataset-settings', type=str, default='default')
-    parser.add_argument('--n_epochs', type=int, default=1)
+    parser.add_argument('--n-epochs', type=int, default=1)
     parser.add_argument('--model-save-frequency', type=int, default=None)
     parser.add_argument('--use-mps', action='store_true')
     return parser.parse_args()
@@ -44,14 +44,14 @@ if __name__ == '__main__':
             generator = MAD_GAN_Generator(model_settings['frame_length'], model_settings['zdim'])
         case _:
             print('No generator selected.')
-            raise(SystemExit(1))
+            raise SystemExit(1)
         
     match model_settings['discriminator']:
         case 'mad_gan':
             discriminator = MAD_GAN_Discriminator(model_settings['frame_length'])
         case _:
             print('No discriminator selected.')
-            raise(SystemExit(1))
+            raise SystemExit(1)
         
     # loading dataset
     match dataset_settings['dataset']:
@@ -59,15 +59,15 @@ if __name__ == '__main__':
             train_loader = NASA_dataloader(dataset_settings, DATA_ROOT, train=True)
         case _:
             print('No dataset selected.')
-            raise(SystemExit(1))
+            raise SystemExit(1)
     
     # initializing trainer:
     match model_settings['trainer']:
         case 'reverse_map':
-            trainer = ReverseMapTrainer(model_settings, generator, discriminator, train_loader)
+            trainer = ReverseMapTrainer(model_settings, generator, discriminator, train_loader, STATES_ROOT / args.experiment_name)
         case _:
             print('No trainer selected.')
-            raise(SystemExit(1))
+            raise SystemExit(1)
         
     # attempting to prepare the state directory
     state_dir = STATES_ROOT / args.experiment_name
@@ -75,6 +75,14 @@ if __name__ == '__main__':
         state_dir.mkdir(parents=False, exist_ok=False)
     except:
         print(f'Couldn\'t create directory {state_dir}. Make sure the parent directory exists and name isn\'t already taken.')
+        raise SystemExit(1)
 
     # starting training
-    trainer.train()
+    trainer.train(args.n_epochs, args.model_save_frequency)
+
+    # saving settings
+    with open(state_dir / 'model_settings.json', 'w') as f:
+        json.dump(model_settings, f)
+    
+    with open(state_dir / 'dataset_settings.json', 'w') as f:
+        json.dump(dataset_settings, f)
