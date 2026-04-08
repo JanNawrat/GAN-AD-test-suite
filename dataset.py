@@ -6,12 +6,12 @@ import ast
 
 def NASA_dataloader(settings, data_root, train=True):
     # settings
-    isa = settings['isa']
-    sensors = settings['sensors']
-    frame_length = settings['frame_length']
-    step = settings['step']
-    batch_size = settings['batch_size']
-    shuffle = settings['shuffle']
+    isa = settings['dataset']['isa']
+    sensors = settings['dataset']['sensors']
+    frame_length = settings['params']['frame_length']
+    step = settings['params']['step_size']
+    batch_size = settings['params']['batch_size']
+    shuffle = settings['params']['shuffle']
     # selecting dataset
     if train:
         raw_time_series = np.load(data_root / 'nasa' / 'train' / f'{isa}.npy')[:,sensors].astype(np.float32)
