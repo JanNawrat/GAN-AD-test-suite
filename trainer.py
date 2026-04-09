@@ -3,34 +3,64 @@ import torch.nn as nn
 import json
 
 class ReverseMapTrainer():
-    def __init__(self, settings, generator, discriminator, train_loader, device, state_dir):
-        self.settings = settings
+    def __init__(
+            self,
+            settings,
+            generator,
+            discriminator,
+            train_loader,
+            device,
+            state_dir,
+        ):
         self.generator = generator
         self.discriminator = discriminator
         self.train_loader = train_loader
         self.device = device
         self.state_dir = state_dir # at this point directory isn't created yet
 
+        self.frame_length = settings['params']['frame_length']
+        self.zdim = settings['model']['generator']['in_dim']
+
         self.lr_g = settings['model']['lr_g']
+        self.betas_g = settings['model']['betas_g']
         self.lr_d = settings['model']['lr_d']
+        self.betas_d = settings['model']['betas_d']
 
     def save_model_checkpoints(self, optimizerG, optimizerD, epoch):
-        torch.save(self.generator.state_dict(), self.state_dir / 'generator' / f'G_{epoch}.pth')
-        torch.save(self.discriminator.state_dict(), self.state_dir / 'discriminator' / f'D_{epoch}.pth')
-        torch.save(optimizerG.state_dict(), self.state_dir / 'optim_generator' / f'G_optim_{epoch}.pth')
-        torch.save(optimizerD.state_dict(), self.state_dir / 'optim_discriminator' / f'D_optim_{epoch}.pth')
+        torch.save(
+            self.generator.state_dict(),
+            self.state_dir / 'generator' / f'G_{epoch}.pth',
+        )
+        torch.save(
+            self.discriminator.state_dict(),
+            self.state_dir / 'discriminator' / f'D_{epoch}.pth',
+        )
+        torch.save(
+            optimizerG.state_dict(),
+            self.state_dir / 'optim_generator' / f'G_optim_{epoch}.pth'
+        )
+        torch.save(
+            optimizerD.state_dict(),
+            self.state_dir / 'optim_discriminator' / f'D_optim_{epoch}.pth',
+        )
 
     def train(self, n_epochs, model_save_frequency):
-        criterion = nn.BCELoss()
-        optimizerG = torch.optim.Adam(self.generator.parameters(), lr=self.lr_g)
-        optimizerD = torch.optim.Adam(self.discriminator.parameters(), lr=self.lr_d)
+        criterion = nn.BCEWithLogitsLoss()
+        optimizerG = torch.optim.Adam(
+            self.generator.parameters(),
+            lr=self.lr_g,
+            betas=self.betas_g,
+        )
+        optimizerD = torch.optim.Adam(
+            self.discriminator.parameters(),
+            lr=self.lr_d,
+            betas=self.betas_d,
+        )
 
         seq_list = []
         G_losses = []
         D_losses = []
         iters = 0
-        frame_length = self.settings['params']['frame_length']
-        zdim = self.settings['model']['zdim']
 
         # preparing checkpoint directories
         # at this point the main directory should be created
@@ -45,8 +75,8 @@ class ReverseMapTrainer():
                 X, _ = data
                 real_sequences = X.to(self.device)
                 batch_size = real_sequences.shape[0]
-                fake_labels = torch.zeros(batch_size * frame_length, dtype=torch.float, device=self.device)
-                real_labels = torch.ones(batch_size * frame_length, dtype=torch.float, device=self.device)
+                fake_labels = torch.zeros(batch_size * self.frame_length, dtype=torch.float, device=self.device)
+                real_labels = torch.ones(batch_size * self.frame_length, dtype=torch.float, device=self.device)
 
                 ############
                 # D training
@@ -54,7 +84,7 @@ class ReverseMapTrainer():
 
                 # fake data
                 self.discriminator.zero_grad()
-                z = torch.randn(batch_size, frame_length, zdim, device=self.device)
+                z = torch.randn(batch_size, self.frame_length, self.zdim, device=self.device)
                 fake_sequences = self.generator(z)
                 predictions = self.discriminator(fake_sequences.detach()).view(-1)
                 loss_D_fake = criterion(predictions, fake_labels)
@@ -76,7 +106,7 @@ class ReverseMapTrainer():
 
                 # fake data
                 self.generator.zero_grad()
-                z = torch.randn(batch_size, frame_length, zdim, device=self.device)
+                z = torch.randn(batch_size, self.frame_length, self.zdim, device=self.device)
                 fake_sequences = self.generator(z)
                 predictions = self.discriminator(fake_sequences).view(-1)
                 loss_G = criterion(predictions, real_labels)
@@ -86,8 +116,13 @@ class ReverseMapTrainer():
 
                 # output status
                 if i % 50 == 0:
-                    print(f'[{epoch}/{n_epochs}][{i}/{len(self.train_loader)}]\tLoss_D: {loss_D.item():.4f}\tLoss_G: {loss_G.item():.4f}\tD(x): {D_x:.4f}\tD(G(z)): {D_G_z1:.4f} / {D_G_z2:.4f}')
-
+                    print(f'[{epoch}/{n_epochs}][{i}/{len(self.train_loader)}]', end='\t')
+                    print(f'Loss_D: {loss_D.item():.4f}', end='\t')
+                    print(f'Loss_G: {loss_G.item():.4f}', end='\t')
+                    print(f'D(x): {D_x:.4f}', end='\t')
+                    print(f'D_G_z1: {D_G_z1:.4f}', end='\t')
+                    print(f'D_G_z2: {D_G_z2:.4f}')
+                
                 # save losses
                 G_losses.append(loss_G.item())
                 D_losses.append(loss_D.item())

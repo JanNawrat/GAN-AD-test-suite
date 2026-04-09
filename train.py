@@ -7,7 +7,7 @@ from pathlib import Path
 import tomllib
 
 from dataset import NASA_dataloader
-from model import MAD_GAN_Generator, MAD_GAN_Discriminator
+from model import LSTM_Generator, LSTM_Discriminator
 from trainer import ReverseMapTrainer
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -37,16 +37,25 @@ if __name__ == '__main__':
         settings = tomllib.load(file)
 
     # loading models
-    match settings['model']['generator']:
-        case 'mad_gan':
-            generator = MAD_GAN_Generator(settings['params']['frame_length'], settings['model']['zdim']).to(DEVICE)
+    match settings['model']['generator']['name']:
+        case 'lstm':
+            generator = LSTM_Generator(
+                settings['model']['generator']['in_dim'],
+                settings['model']['generator']['out_dim'],
+                settings['model']['generator']['hidden_size'],
+                settings['model']['generator']['num_layers'],
+            ).to(DEVICE)
         case _:
             print('No generator selected.')
             raise SystemExit(1)
         
-    match settings['model']['discriminator']:
-        case 'mad_gan':
-            discriminator = MAD_GAN_Discriminator(settings['params']['frame_length']).to(DEVICE)
+    match settings['model']['discriminator']['name']:
+        case 'lstm':
+            discriminator = LSTM_Discriminator(
+                settings['model']['discriminator']['in_dim'],
+                settings['model']['discriminator']['hidden_size'],
+                settings['model']['discriminator']['num_layers'],
+            ).to(DEVICE)
         case _:
             print('No discriminator selected.')
             raise SystemExit(1)
@@ -62,7 +71,14 @@ if __name__ == '__main__':
     # initializing trainer:
     match settings['model']['trainer']:
         case 'reverse_map':
-            trainer = ReverseMapTrainer(settings, generator, discriminator, train_loader, DEVICE, STATES_ROOT / args.experiment_name)
+            trainer = ReverseMapTrainer(
+                settings,
+                generator,
+                discriminator,
+                train_loader,
+                DEVICE,
+                STATES_ROOT / args.experiment_name
+            )
         case _:
             print('No trainer selected.')
             raise SystemExit(1)
