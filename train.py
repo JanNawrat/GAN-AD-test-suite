@@ -4,9 +4,10 @@ import torch
 import argparse
 import json
 from pathlib import Path
+import time
 import tomllib
 
-from dataset import NASA_dataloader
+from dataset import NASA_dataloader, SWaT_dataloader
 from model import LSTM_Generator, LSTM_Discriminator
 from trainer import ReverseMapTrainer
 
@@ -31,6 +32,7 @@ if __name__ == '__main__':
     # mps (apple silicon only)
     if args.use_mps and torch.backends.mps.is_available():
         DEVICE = torch.device('mps')
+    print(f'Selected device: {DEVICE}')
 
     # importing settings
     with open(SETTINGS_ROOT / f'{args.settings}.toml', 'rb') as file:
@@ -64,6 +66,8 @@ if __name__ == '__main__':
     match settings['dataset']['name']:
         case 'nasa':
             train_loader = NASA_dataloader(settings, DATA_ROOT, train=True)
+        case 'swat':
+            train_loader = SWaT_dataloader(settings, DATA_ROOT, train=True)
         case _:
             print('No dataset selected.')
             raise SystemExit(1)
@@ -92,7 +96,15 @@ if __name__ == '__main__':
         raise SystemExit(1)
 
     # starting training
+    time_start = time.time()
     trainer.train(args.n_epochs, args.model_save_frequency)
+    time_end = time.time()
+    time_total = time_end - time_start
+    time_per_epoch = time_total / args.n_epochs
+    # print(f'Total training time: {time_total}')
+    # print(f'Time per epoch: {time_per_epoch}')
+    print(f'Total training time: {time.strftime('%H:%M:%S', time.gmtime(time_total))}')
+    print(f'Time per epoch: {time.strftime('%M:%S', time.gmtime(time_per_epoch))}')
 
     # saving settings
     with open(state_dir / 'settings.toml', 'wb') as f:
