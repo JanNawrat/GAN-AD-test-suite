@@ -22,9 +22,11 @@ class ReverseMapTrainer():
         self.zdim = settings['model']['generator']['in_dim']
 
         self.lr_g = settings['model']['lr_g']
-        self.betas_g = settings['model']['betas_g']
         self.lr_d = settings['model']['lr_d']
+        self.betas_g = settings['model']['betas_g']
         self.betas_d = settings['model']['betas_d']
+        self.generator_rounds = settings['model']['generator_rounds']
+        self.discriminator_rounds = settings['model']['discriminator_rounds']
 
     def save_model_checkpoints(self, optimizerG, optimizerD, epoch):
         torch.save(
@@ -82,37 +84,39 @@ class ReverseMapTrainer():
                 # D training
                 ############
 
-                # fake data
-                self.discriminator.zero_grad()
-                z = torch.randn(batch_size, self.frame_length, self.zdim, device=self.device)
-                fake_sequences = self.generator(z)
-                predictions = self.discriminator(fake_sequences.detach()).view(-1)
-                loss_D_fake = criterion(predictions, fake_labels)
-                loss_D_fake.backward()
-                D_G_z1 = predictions.mean().item()
+                for j in range(self.discriminator_rounds):
+                    # fake data
+                    self.discriminator.zero_grad()
+                    z = torch.randn(batch_size, self.frame_length, self.zdim, device=self.device)
+                    fake_sequences = self.generator(z)
+                    predictions = self.discriminator(fake_sequences.detach()).view(-1)
+                    loss_D_fake = criterion(predictions, fake_labels)
+                    loss_D_fake.backward()
+                    D_G_z1 = predictions.mean().item()
 
-                # real data
-                predictions = self.discriminator(real_sequences).view(-1)
-                loss_D_real = criterion(predictions, real_labels)
-                loss_D_real.backward()
-                optimizerD.step()
-                D_x = predictions.mean().item()
+                    # real data
+                    predictions = self.discriminator(real_sequences).view(-1)
+                    loss_D_real = criterion(predictions, real_labels)
+                    loss_D_real.backward()
+                    optimizerD.step()
+                    D_x = predictions.mean().item()
 
-                loss_D = loss_D_fake + loss_D_real
+                    loss_D = loss_D_fake + loss_D_real
 
                 ############
                 # G training
                 ############
 
-                # fake data
-                self.generator.zero_grad()
-                z = torch.randn(batch_size, self.frame_length, self.zdim, device=self.device)
-                fake_sequences = self.generator(z)
-                predictions = self.discriminator(fake_sequences).view(-1)
-                loss_G = criterion(predictions, real_labels)
-                loss_G.backward()
-                optimizerG.step()
-                D_G_z2 = predictions.mean().item()
+                for j in range(self.generator_rounds):
+                    # fake data
+                    self.generator.zero_grad()
+                    z = torch.randn(batch_size, self.frame_length, self.zdim, device=self.device)
+                    fake_sequences = self.generator(z)
+                    predictions = self.discriminator(fake_sequences).view(-1)
+                    loss_G = criterion(predictions, real_labels)
+                    loss_G.backward()
+                    optimizerG.step()
+                    D_G_z2 = predictions.mean().item()
 
                 # output status
                 if i % 50 == 0:

@@ -39,7 +39,7 @@ def NASA_dataloader(settings, data_root, train=True): # currently training and t
     # returning dataloader
     return torch.utils.data.DataLoader(frames, batch_size=batch_size, num_workers=num_workers, shuffle=shuffle)
 
-def SWaT_dataloader(settings, data_root, train=True):
+def SWaT_dataloader(settings, data_root, train=True, start=21600):
     # settings
     sensor_columns = settings['dataset']['sensors'] # all sensors are used if empty array is provided
     frame_length = settings['params']['frame_length']
@@ -59,8 +59,21 @@ def SWaT_dataloader(settings, data_root, train=True):
         sensor_columns = df.drop(columns=['Timestamp', 'Normal/Attack']).columns
     label_column = 'Normal/Attack'
 
-    sensors = df[sensor_columns].to_numpy().astype(np.float32)
-    labels = df[label_column].map(lambda x: 0 if x == 'Normal' else 1).to_numpy().astype(np.float32)
+    sensors = df[sensor_columns].to_numpy().astype(np.float32)[start:,:]
+    labels = df[label_column].map(lambda x: 0 if x == 'Normal' else 1).to_numpy().astype(np.float32)[start:]
+
+    # data normalization
+    # TODO: test data should use the min and max values from the training data
+    min_values = np.zeros(sensors.shape[1], dtype=np.float32)
+    max_values = np.zeros(sensors.shape[1], dtype=np.float32)
+
+    for i in range(sensors.shape[1]):
+        min_values[i] = np.min(sensors[:,i])
+        max_values[i] = np.max(sensors[:,i])
+        if max_values[i]  - min_values[i] != 0:
+            sensors[:,i] = (sensors[:,i] - min_values[i]) / (max_values[i] - min_values[i]) * 2 - 1
+        else:
+            sensors[:,i] = np.zeros(sensors.shape[0], dtype=np.float32)
 
     # slicing frames
     frames = []
