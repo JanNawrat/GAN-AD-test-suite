@@ -7,14 +7,10 @@ from pathlib import Path
 import time
 import tomllib
 
+from consts import DEVICE, SETTINGS_ROOT, STATES_ROOT, DATA_ROOT
 from dataset import NASA_dataloader, SWaT_dataloader
 from model import LSTM_Generator, LSTM_Discriminator
 from trainer import ReverseMapTrainer
-
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-SETTINGS_ROOT = Path('settings')
-STATES_ROOT = Path('states')
-DATA_ROOT = Path('data')
 
 def parse_arguments():
     parser = argparse.ArgumentParser()

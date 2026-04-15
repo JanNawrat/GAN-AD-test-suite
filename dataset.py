@@ -84,3 +84,12 @@ def SWaT_dataloader(settings, data_root, train=True, start=21600):
 
     # returning dataloader
     return torch.utils.data.DataLoader(frames, batch_size=batch_size, num_workers=num_workers, shuffle=shuffle)
+
+def get_SWaT_column_names(settings, data_root):
+    # importing column_names from settings
+    if settings['dataset']['sensors']:
+        return settings['dataset']['sensors']
+    
+    # importing column_names from csv
+    df = pd.read_csv(data_root / 'SWaT' / 'SWaT_Dataset_Normal_v1.csv')
+    return df.drop(columns=['Timestamp', 'Normal/Attack']).columns
