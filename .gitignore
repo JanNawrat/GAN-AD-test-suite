@@ -5,3 +5,5 @@ data
 states
 settings
 *.ipynb
+*.egg
+*.egg-info

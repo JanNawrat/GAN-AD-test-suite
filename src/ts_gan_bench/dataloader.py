@@ -39,7 +39,54 @@ def NASA_dataloader(settings, data_root, train=True): # currently training and t
     # returning dataloader
     return torch.utils.data.DataLoader(frames, batch_size=batch_size, num_workers=num_workers, shuffle=shuffle)
 
-def SWaT_dataloader(settings, data_root, train=True, start=21600):
+def SWaT_dataloader(settings, train=True, start=21600):
+    # settings
+    data_root = settings.paths.data_root
+    sensor_columns = settings.dataset.features # all sensors are used if empty array is provided
+    window_size = settings.params.window_size
+    stride = settings.params.stride
+    batch_size = settings.params.batch_size
+    num_workers = settings.params.num_workers
+    shuffle = settings.params.shuffle
+
+    # selecting dataset
+    if train:
+        df = pd.read_csv(data_root / 'SWaT' / 'SWaT_Dataset_Normal_v1.csv')
+    else:
+        df = pd.read_csv(data_root / 'SWaT' / 'SWaT_Dataset_Attack_v0.csv')
+
+    # extracting sensor data and labels
+    if not sensor_columns:
+        sensor_columns = df.drop(columns=['Timestamp', 'Normal/Attack']).columns
+    label_column = 'Normal/Attack'
+
+    sensors = df[sensor_columns].to_numpy().astype(np.float32)[start:,:]
+    labels = df[label_column].map(lambda x: 0 if x == 'Normal' else 1).to_numpy().astype(np.float32)[start:]
+
+    # data normalization
+    # TODO: test data should use the min and max values from the training data
+    min_values = np.zeros(sensors.shape[1], dtype=np.float32)
+    max_values = np.zeros(sensors.shape[1], dtype=np.float32)
+
+    for i in range(sensors.shape[1]):
+        min_values[i] = np.min(sensors[:,i])
+        max_values[i] = np.max(sensors[:,i])
+        if max_values[i]  - min_values[i] != 0:
+            sensors[:,i] = (sensors[:,i] - min_values[i]) / (max_values[i] - min_values[i]) * 2 - 1
+        else:
+            sensors[:,i] = np.zeros(sensors.shape[0], dtype=np.float32)
+
+    # slicing frames
+    frames = []
+    for i in range(0, len(sensors) - window_size, stride):
+        frame = sensors[i:i+window_size,:]
+        label = 1 in labels[i:i+window_size]
+        frames.append([frame, label])
+
+    # returning dataloader
+    return torch.utils.data.DataLoader(frames, batch_size=batch_size, num_workers=num_workers, shuffle=shuffle)
+
+def _SWaT_dataloader(settings, data_root, train=True, start=21600): # old version
     # settings
     sensor_columns = settings['dataset']['sensors'] # all sensors are used if empty array is provided
     frame_length = settings['params']['frame_length']

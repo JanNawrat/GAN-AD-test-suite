@@ -9,24 +9,22 @@ class ReverseMapTrainer():
             generator,
             discriminator,
             train_loader,
-            device,
-            state_dir,
         ):
         self.generator = generator
         self.discriminator = discriminator
         self.train_loader = train_loader
-        self.device = device
-        self.state_dir = state_dir # at this point directory isn't created yet
 
-        self.frame_length = settings['params']['frame_length']
-        self.zdim = settings['model']['generator']['in_dim']
 
-        self.lr_g = settings['model']['lr_g']
-        self.lr_d = settings['model']['lr_d']
-        self.betas_g = settings['model']['betas_g']
-        self.betas_d = settings['model']['betas_d']
-        self.generator_rounds = settings['model']['generator_rounds']
-        self.discriminator_rounds = settings['model']['discriminator_rounds']
+        self.device = torch.device(settings.device_name)
+        self.state_dir = settings.paths.state_dir # at this point directory isn't created yet
+
+        self.window_size = settings.params.window_size
+        self.zdim = settings.model.generator.in_dim
+
+        self.lr_g = settings.model.lr_g
+        self.lr_d = settings.model.lr_d
+        self.generator_rounds = settings.model.generator_rounds
+        self.discriminator_rounds = settings.model.discriminator_rounds
 
     def save_model_checkpoints(self, optimizerG, optimizerD, epoch):
         torch.save(
@@ -51,12 +49,10 @@ class ReverseMapTrainer():
         optimizerG = torch.optim.Adam(
             self.generator.parameters(),
             lr=self.lr_g,
-            betas=self.betas_g,
         )
         optimizerD = torch.optim.Adam(
             self.discriminator.parameters(),
             lr=self.lr_d,
-            betas=self.betas_d,
         )
 
         seq_list = []
@@ -77,8 +73,8 @@ class ReverseMapTrainer():
                 X, _ = data
                 real_sequences = X.to(self.device)
                 batch_size = real_sequences.shape[0]
-                fake_labels = torch.zeros(batch_size * self.frame_length, dtype=torch.float, device=self.device)
-                real_labels = torch.ones(batch_size * self.frame_length, dtype=torch.float, device=self.device)
+                fake_labels = torch.zeros(batch_size * self.window_size, dtype=torch.float, device=self.device)
+                real_labels = torch.ones(batch_size * self.window_size, dtype=torch.float, device=self.device)
 
                 ############
                 # D training
@@ -87,7 +83,7 @@ class ReverseMapTrainer():
                 for j in range(self.discriminator_rounds):
                     # fake data
                     self.discriminator.zero_grad()
-                    z = torch.randn(batch_size, self.frame_length, self.zdim, device=self.device)
+                    z = torch.randn(batch_size, self.window_size, self.zdim, device=self.device)
                     fake_sequences = self.generator(z)
                     predictions = self.discriminator(fake_sequences.detach()).view(-1)
                     loss_D_fake = criterion(predictions, fake_labels)
@@ -110,7 +106,7 @@ class ReverseMapTrainer():
                 for j in range(self.generator_rounds):
                     # fake data
                     self.generator.zero_grad()
-                    z = torch.randn(batch_size, self.frame_length, self.zdim, device=self.device)
+                    z = torch.randn(batch_size, self.window_size, self.zdim, device=self.device)
                     fake_sequences = self.generator(z)
                     predictions = self.discriminator(fake_sequences).view(-1)
                     loss_G = criterion(predictions, real_labels)

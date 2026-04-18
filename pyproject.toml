@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ts_gan_bench"
+version = "0.1.0"
+description = "Generative Adversarial Networks for Anomaly Detection"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    {name = "Jan Nawrat", email = "jan.ryszard.nawrat@gmail.com"}
+]
+dependencies = [
+    "torch",
+    "torchvision",
+    "numpy",
+    "pandas",
+    "pydantic",
+    "tomli_w",
+]
+
+[project.scripts]
+ts_gan_bench = "ts_gan_bench.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# If you have non-python files (like config files) inside your package
+"*" = ["*.yaml", "*.json"]
