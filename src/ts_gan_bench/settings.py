@@ -59,8 +59,15 @@ class ReverseMapConfig(BaseModel):
     type: Literal['reverse_map']
     generator: GeneratorConfig
     discriminator: DiscriminatorConfig
+    loss: str = 'bce'
+    gp_weight: float = 10.
+    disc_real_label: float = 1.0 # used for label smoothing
+    clip_grad_g: float = 0.0
+    clip_grad_d: float = 0.0
     lr_g: float
     lr_d: float
+    betas_g: list[float] = [0.5, 0.999]
+    betas_d: list[float] = [0.5, 0.999]
     generator_rounds: int
     discriminator_rounds: int
 

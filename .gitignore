@@ -7,3 +7,4 @@ settings
 *.ipynb
 *.egg
 *.egg-info
+run.sh
