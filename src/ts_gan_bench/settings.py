@@ -57,17 +57,23 @@ DiscriminatorConfig = Annotated[
 # =====
 class ReverseMapConfig(BaseModel):
     type: Literal['reverse_map']
+    # models
     generator: GeneratorConfig
     discriminator: DiscriminatorConfig
+    # losses
     loss: str = 'bce'
     gp_weight: float = 10.
-    disc_real_label: float = 1.0 # used for label smoothing
+    # stabilization techiques
+    disc_real_label: float = 1.0 # used for label smoothing in BCE
     clip_grad_g: float = 0.0
     clip_grad_d: float = 0.0
+    bounded_dequantization: float = 0.0 # used for actuators if present
+    # optimizer setup
     lr_g: float
     lr_d: float
     betas_g: list[float] = [0.5, 0.999]
     betas_d: list[float] = [0.5, 0.999]
+    # training ratio
     generator_rounds: int
     discriminator_rounds: int
 
@@ -95,8 +101,8 @@ class Settings(BaseModel):
     device_name: str
 
 
-def load_settings(settings_file: str, experiment_name: str, n_epochs: int) -> Settings:
-    with open(constants.SETTINGS_ROOT / f'{settings_file}.toml', 'rb') as file:
+def load_settings(settings_file: Path, experiment_name: str, n_epochs: int) -> Settings:
+    with open(settings_file, 'rb') as file:
         config = tomllib.load(file)
 
     config['paths'] = {

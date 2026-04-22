@@ -24,7 +24,7 @@ def parse_arguments():
     train_parser.add_argument('experiment_name', type=str)
     train_parser.add_argument('-n', '--n_epochs', type=int, default=1)
     train_parser.add_argument('--settings', type=str, default='default')
-    train_parser.add_argument('--model-save-frequency', type=int, default=None)
+    train_parser.add_argument('--save-freq', type=int, default=None)
     train_parser.add_argument('--overwrite', action='store_true') # used for debugging, will overwrite results
     # test args
     test_parser = subparsers.add_parser('test')
@@ -52,12 +52,12 @@ def load_discriminator(discriminator_settings):
             print('Incorrect discriminator selected!')
             raise SystemExit(1)
         
-def load_dataset(settings, train=True): # temporary, TODO: improve
-    return SWaT_dataloader(settings, train=train)
+def load_dataset(settings): # temporary, TODO: improve
+    return SWaT_dataloader(settings)
 
 def main():
     args = parse_arguments()
-    settings = load_settings(args.settings, args.experiment_name, args.n_epochs)
+    settings = load_settings(constants.SETTINGS_ROOT / f'{args.settings}.toml', args.experiment_name, args.n_epochs)
     # print(settings.model_dump_json(indent=4))
 
     # load models
@@ -65,7 +65,7 @@ def main():
     discriminator = load_discriminator(settings.model.discriminator).to(torch.device(settings.device_name))
     
     # load dataset
-    train_loader = load_dataset(settings, train=True)
+    train_loader, _, _, actuator_idx = load_dataset(settings)
 
     # initialize trainer
     match settings.model.type:
@@ -79,6 +79,7 @@ def main():
         case _:
             print('Incorrect model type!')
             raise SystemExit(1)
+    trainer.add_actuator_idx(actuator_idx)
         
     # attempting to prepare the state directory
     state_dir = settings.paths.state_dir
@@ -96,7 +97,7 @@ def main():
     
     # starting training
     time_start = time.time()
-    trainer.train(args.n_epochs, args.model_save_frequency)
+    trainer.train(args.n_epochs, args.save_freq)
     time_end = time.time()
     time_total = time_end - time_start
     time_per_epoch = time_total / args.n_epochs
