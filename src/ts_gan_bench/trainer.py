@@ -13,16 +13,17 @@ class Trainer():
             self,
             settings,
             train_loader,
+            feature_names=None,
+            actuator_idx=None,
         ):
         self.device = torch.device(settings.device_name)
         self.state_dir = settings.paths.state_dir # at this point directory isn't created yet
         self.window_size = settings.params.window_size
         self.train_loader = train_loader
+        self.feature_names = feature_names
         self.bounded_dequantization = settings.model.bounded_dequantization
-        self.actuator_idx = None
-
-    def add_actuator_idx(self, actuator_idx):
         self.actuator_idx = actuator_idx
+
 
     def add_bounded_dequantization(self, samples):
         samples_quantized = samples.clone()
@@ -62,7 +63,7 @@ class Trainer():
                 ax.set_xticks([0, sample_sequences.shape[1]/2, sample_sequences.shape[1]])
         # reusing the plot
         for i in range(sample_sequences.shape[2]):
-            name = f'Feature_{i}' # TODO
+            name = self.feature_names[i] if self.feature_names is not None else f'Feature_{i}'
             for j in range(64):
                 plots[j][0].set_ydata(sample_sequences[j,:,i])
             plt.savefig(samples_dir / f'{name}.png')
@@ -76,8 +77,10 @@ class ReverseMapTrainer(Trainer):
             generator,
             discriminator,
             train_loader,
+            feature_names=None,
+            actuator_idx=None,
         ):
-        super().__init__(settings, train_loader)
+        super().__init__(settings, train_loader, feature_names, actuator_idx)
         self.generator = generator
         self.discriminator = discriminator
 

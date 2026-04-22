@@ -4,62 +4,46 @@ import pandas as pd
 from pathlib import Path
 import ast
 
-def NASA_dataloader(settings, data_root, train=True): # currently training and testing dataste are imported in the same way
-    # settings
-    isa = settings['dataset']['isa']
-    sensors = settings['dataset']['sensors']
-    frame_length = settings['params']['frame_length']
-    step_size = settings['params']['step_size']
-    batch_size = settings['params']['batch_size']
-    num_workers = settings['params']['num_workers']
-    shuffle = settings['params']['shuffle']
-    
-    # selecting dataset
-    if train:
-        raw_time_series = np.load(data_root / 'nasa' / 'train' / f'{isa}.npy')[:,sensors].astype(np.float32)
-    else:
-        raw_time_series = np.load(data_root / 'nasa' / 'test' / f'{isa}.npy')[:,sensors].astype(np.float32)
-
-    # importing testing labels
-    if not train:
-        data_info = pd.read_csv('nasa/labeled_anomalies.csv')
-        anomalous_regions = ast.literal_eval(data_info[data_info['chan_id']==isa].iloc[0]['anomaly_sequences'])
-        raw_labels = np.zeros(len(raw_time_series), dtype=np.float32)
-        for region in anomalous_regions:
-            for i in range(region[0], region[1]):
-                raw_labels[i] = 1
-
-    # slicing frames
+def apply_sliding_window(data, window_size, stride, labels=None):
+    # leave labels as None for training data
     frames = []
-    for i in range(0, len(raw_time_series) - frame_length, step_size):
-        frame = raw_time_series[i:i+frame_length,:]
-        label = 0 if train else 1 in raw_labels[i:i+frame_length]
-        frames.append([frame, label])
+    frame_labels = []
+    for i in range(0, len(data) - window_size, stride):
+        frame = data[i:i+window_size,:]
+        frames.append(frame)
 
-    # returning dataloader
-    return torch.utils.data.DataLoader(frames, batch_size=batch_size, num_workers=num_workers, shuffle=shuffle)
+        if labels is not None:
+            label = 1 in labels[i:i+window_size]
+            frame_labels.append(label)
+        else:
+            frame_labels.append(0)
+    return frames, frame_labels
 
-def SWaT_dataloader(settings, train_start=21600):
-    # settings
-    data_root = settings.paths.data_root
-    feature_columns = settings.dataset.features # all sensors are used if empty array is provided
-    window_size = settings.params.window_size
-    stride = settings.params.stride
-    batch_size = settings.params.batch_size
-    num_workers = settings.params.num_workers
-    shuffle = settings.params.shuffle
+def wrap_in_dataloader(frames, frame_labels, batch_size=32, num_workers=0, shuffle=True):
+    X_tensor = torch.tensor(frames, dtype=torch.float32)
+    y_tensor = torch.tensor(frame_labels, dtype=torch.float32)
+    return torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(X_tensor, y_tensor),
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=shuffle
+    )
 
-    # loading datasets
-    df_train = pd.read_csv(data_root / 'SWaT' / 'SWaT_Dataset_Normal_v1.csv')
-    df_test = pd.read_csv(data_root / 'SWaT' / 'SWaT_Dataset_Attack_v0.csv')
+def load_SWaT(data_root, features=None, train_start=21600):
+    # returns normalized train and test sets with motorized valve mapping fixed
+    # aditionally returns feature names and indexes of actuators
+    # leave features as None to load all
+    df_train = pd.read_csv(data_root / 'SWaT' / 'train.csv')
+    df_test = pd.read_csv(data_root / 'SWaT' / 'test.csv')
 
-    # extracting sensor data and labels
-    if not feature_columns:
-        feature_columns = df_train.drop(columns=['Timestamp', 'Normal/Attack']).columns
+    # feature selection
+    if not features:
+        features = df_train.drop(columns=['Timestamp', 'Normal/Attack']).columns
     label_column = 'Normal/Attack'
 
-    features_train = df_train[feature_columns].to_numpy().astype(np.float32)[train_start:,:]
-    features_test = df_test[feature_columns].to_numpy().astype(np.float32)
+    # extracting data to numpy and dropping warm up period from training data
+    data_train = df_train[features].to_numpy().astype(np.float32)[train_start:,:]
+    data_test = df_test[features].to_numpy().astype(np.float32)
     labels_test = df_test[label_column].map(lambda x: 0 if x == 'Normal' else 1).to_numpy().astype(np.float32)
 
     # data normalization
@@ -68,54 +52,43 @@ def SWaT_dataloader(settings, train_start=21600):
     motorized_valves = ['MV101', 'MV201', 'MV301', 'MV302', 'MV303', 'MV304']
     motorized_valve_mapping = np.array([0., -1., 1.])
 
-    for i in range(features_train.shape[1]):
-        name = feature_columns[i]
+    for i in range(data_train.shape[1]):
+        name = features[i]
         if name in sensors:
-            min_value = np.min(features_train[:,i])
-            max_value = np.max(features_train[:,i])
-            features_train[:,i] = (features_train[:,i] - min_value) / (max_value - min_value) * 2 - 1
-            features_test[:,i] = (features_test[:,i] - min_value) / (max_value - min_value) * 2 - 1
+            min_value = np.min(data_train[:,i])
+            max_value = np.max(data_train[:,i])
+            data_train[:,i] = (data_train[:,i] - min_value) / (max_value - min_value) * 2 - 1
+            data_test[:,i] = (data_test[:,i] - min_value) / (max_value - min_value) * 2 - 1
         elif name in pumps:
             # values in pumps are [1., 2.] by default
             # we want to map them to [-1., 1.]
-            features_train[:,i] = (features_train[:,i] - 1.5) * 2
-            features_test[:,i] = (features_test[:,i] - 1.5) * 2
+            data_train[:,i] = (data_train[:,i] - 1.5) * 2
+            data_test[:,i] = (data_test[:,i] - 1.5) * 2
         elif name in motorized_valves:
             # values in motorized valves are [0., 1., 2.] by default
             # they are non linear, 0 represents moving
             # we want to map them to [0., -1., 1.]
-            features_train[:,i] = motorized_valve_mapping[features_train[:,i].astype(int)]
-            features_test[:,i] = motorized_valve_mapping[features_test[:,i].astype(int)]
+            data_train[:,i] = motorized_valve_mapping[data_train[:,i].astype(int)]
+            data_test[:,i] = motorized_valve_mapping[data_test[:,i].astype(int)]
 
-    # slicing frames
-    frames_train = []
-    for i in range(0, len(features_train) - window_size, stride):
-        frame = features_train[i:i+window_size,:]
-        label = 0
-        frames_train.append([frame, label])
-
-    frames_test = []
-    for i in range(0, len(features_test) - window_size, stride):
-        frame = features_test[i:i+window_size,:]
-        label = 1 in labels_test[i:i+window_size]
-        frames_test.append([frame, label])
-
-    # getting actuator index list (used for adding noise)
+    # getting actuator index list (used for dequantization)
     actuator_idx = []
-    for i, feature_name in enumerate(feature_columns):
+    for i, feature_name in enumerate(features):
         if feature_name in pumps or feature_name in motorized_valves:
             actuator_idx.append(i)
 
-    # returning dataloaders
-    train_loader = torch.utils.data.DataLoader(frames_train, batch_size=batch_size, num_workers=num_workers, shuffle=shuffle)
-    test_loader = torch.utils.data.DataLoader(frames_test, batch_size=batch_size, num_workers=num_workers)
-    return train_loader, test_loader, feature_columns, actuator_idx
+    return data_train, data_test, labels_test, features, actuator_idx
 
-def get_SWaT_column_names(settings, data_root):
-    # importing column_names from settings
-    if settings['dataset']['sensors']:
-        return settings['dataset']['sensors']
-    
-    # importing column_names from csv
-    df = pd.read_csv(data_root / 'SWaT' / 'SWaT_Dataset_Normal_v1.csv')
-    return df.drop(columns=['Timestamp', 'Normal/Attack']).columns
+def load_NASA(data_root, isa, features=None, train=True):
+    raw_train_set = np.load(data_root / 'nasa' / 'train' / f'{isa}.npy')[:,sensors].astype(np.float32)
+    raw_test_set = np.load(data_root / 'nasa' / 'test' / f'{isa}.npy')[:,sensors].astype(np.float32)
+
+    # importing testing labels
+    data_info = pd.read_csv('nasa/labeled_anomalies.csv')
+    anomalous_regions = ast.literal_eval(data_info[data_info['chan_id']==isa].iloc[0]['anomaly_sequences'])
+    raw_labels = np.zeros(len(raw_time_series), dtype=np.float32)
+    for region in anomalous_regions:
+        for i in range(region[0], region[1]):
+            raw_labels[i] = 1
+
+    return raw_train_set, raw_test_set, raw_labels

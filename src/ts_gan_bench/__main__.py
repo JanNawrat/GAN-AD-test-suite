@@ -5,7 +5,7 @@ import time
 import torch
 
 from ts_gan_bench import constants
-from ts_gan_bench.dataloader import SWaT_dataloader
+from ts_gan_bench.dataloader import apply_sliding_window, wrap_in_dataloader, load_SWaT
 from ts_gan_bench.model import LSTM_Generator, LSTM_Discriminator
 from ts_gan_bench.settings import load_settings
 from ts_gan_bench.trainer import ReverseMapTrainer
@@ -52,8 +52,23 @@ def load_discriminator(discriminator_settings):
             print('Incorrect discriminator selected!')
             raise SystemExit(1)
         
-def load_dataset(settings): # temporary, TODO: improve
-    return SWaT_dataloader(settings)
+def load_dataset(settings): # temporarily only SWaT, TODO: improve
+    train_data, _, _, feature_names, actuator_idx = load_SWaT(
+        settings.paths.data_root,
+        settings.dataset.features,
+    )
+    training_frames, training_frame_labels = apply_sliding_window(
+        train_data,
+        settings.params.window_size,
+        settings.params.stride,
+    )
+    train_loader = wrap_in_dataloader(
+        training_frames,
+        training_frame_labels,
+        settings.params.batch_size,
+        settings.params.num_workers,
+    )
+    return train_loader, feature_names, actuator_idx
 
 def main():
     args = parse_arguments()
@@ -65,7 +80,7 @@ def main():
     discriminator = load_discriminator(settings.model.discriminator).to(torch.device(settings.device_name))
     
     # load dataset
-    train_loader, _, _, actuator_idx = load_dataset(settings)
+    train_loader, feature_names, actuator_idx = load_dataset(settings)
 
     # initialize trainer
     match settings.model.type:
@@ -75,11 +90,12 @@ def main():
                 generator=generator,
                 discriminator=discriminator,
                 train_loader=train_loader,
+                feature_names=feature_names,
+                actuator_idx=actuator_idx,
             )
         case _:
             print('Incorrect model type!')
             raise SystemExit(1)
-    trainer.add_actuator_idx(actuator_idx)
         
     # attempting to prepare the state directory
     state_dir = settings.paths.state_dir
