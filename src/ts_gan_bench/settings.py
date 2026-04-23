@@ -1,5 +1,5 @@
 import tomllib
-from typing import Literal, Annotated, Union
+from typing import List, Literal, Annotated, Union
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -16,7 +16,7 @@ class Paths(BaseModel):
 # =======
 class SWaTConfig(BaseModel):
     type: Literal['swat']
-    features: list
+    features: List[str]
 
 DatasetConfig = Annotated[
     Union[SWaTConfig],
@@ -33,8 +33,17 @@ class LSTMGeneratorConfig(BaseModel):
     hidden_size: int
     num_layers: int
 
+class TCNGeneratorConfig(BaseModel):
+    type: Literal['tcn']
+    in_dim: int
+    out_dim: int
+    kernel_size: int
+    num_channels: List[int]
+    dilations: List[int]
+    dropout: float
+
 GeneratorConfig = Annotated[
-    Union[LSTMGeneratorConfig],
+    Union[LSTMGeneratorConfig, TCNGeneratorConfig],
     Field(discriminator='type')
 ]
 
@@ -47,8 +56,16 @@ class LSTMDiscriminatorConfig(BaseModel):
     hidden_size: int
     num_layers: int
 
+class TCNDiscriminatorConfig(BaseModel):
+    type: Literal['tcn']
+    in_dim: int
+    kernel_size: int
+    num_channels: List[int]
+    dilations: List[int]
+    dropout: float
+
 DiscriminatorConfig = Annotated[
-    Union[LSTMDiscriminatorConfig],
+    Union[LSTMDiscriminatorConfig, TCNDiscriminatorConfig],
     Field(discriminator='type')
 ]
 
@@ -89,6 +106,7 @@ class Params(BaseModel):
     window_size: int
     stride: int
     batch_size: int
+    time_last: bool = False # transforms data to (batch, features, time), used for TCN
     num_workers: int
     shuffle: bool
 

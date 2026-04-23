@@ -147,7 +147,7 @@ class TCN_Discriminator(nn.Module):
         kernel_size=3,
         num_channels=[64, 64, 64],
         dilations=[1, 4, 16],
-        dropout=0.2,      
+        dropout=0.2,
     ):
         super().__init__()
         self.in_dim = in_dim

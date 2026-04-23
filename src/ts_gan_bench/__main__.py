@@ -7,6 +7,7 @@ import torch
 from ts_gan_bench import constants
 from ts_gan_bench.dataloader import apply_sliding_window, wrap_in_dataloader, load_SWaT
 from ts_gan_bench.model_lstm import LSTM_Generator, LSTM_Discriminator
+from ts_gan_bench.model_tcn import TCN_Generator, TCN_Discriminator
 from ts_gan_bench.settings import load_settings
 from ts_gan_bench.trainer import ReverseMapTrainer
 
@@ -38,6 +39,8 @@ def load_generator(generator_settings):
     match generator_type:
         case 'lstm':
             return LSTM_Generator(**generator_kwargs)
+        case 'tcn':
+            return TCN_Generator(**generator_kwargs)
         case _:
             print('Incorrect generator selected!')
             raise SystemExit(1)
@@ -48,6 +51,8 @@ def load_discriminator(discriminator_settings):
     match discriminator_type:
         case 'lstm':
             return LSTM_Discriminator(**discriminator_kwargs)
+        case 'tcn':
+            return TCN_Discriminator(**discriminator_kwargs)
         case _:
             print('Incorrect discriminator selected!')
             raise SystemExit(1)
@@ -67,6 +72,7 @@ def load_dataset(settings): # temporarily only SWaT, TODO: improve
         training_frame_labels,
         settings.params.batch_size,
         settings.params.num_workers,
+        time_last=settings.params.time_last,
     )
     return train_loader, feature_names, actuator_idx
 
@@ -100,9 +106,9 @@ def main():
     # attempting to prepare the state directory
     state_dir = settings.paths.state_dir
     try:
-        state_dir.mkdir(parents=False, exist_ok=args.overwrite)
+        state_dir.mkdir(parents=True, exist_ok=args.overwrite)
     except:
-        print(f'Couldn\'t create directory {state_dir}. Make sure the parent directory exists and name isn\'t already taken.')
+        print(f'Couldn\'t create directory {state_dir}. Make sure the name isn\'t already taken.')
         raise SystemExit(1)
     
     # saving setting (only the original .toml file)

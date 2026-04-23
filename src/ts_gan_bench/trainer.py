@@ -2,6 +2,7 @@ import json
 
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.autograd as autograd
 import torch.nn as nn
@@ -21,6 +22,7 @@ class Trainer():
         self.window_size = settings.params.window_size
         self.train_loader = train_loader
         self.feature_names = feature_names
+        self.time_last = settings.params.time_last
         self.bounded_dequantization = settings.model.bounded_dequantization
         self.actuator_idx = actuator_idx
 
@@ -48,6 +50,8 @@ class Trainer():
         # preprogrammed for 64 batch size
         samples_dir = self.state_dir / 'sample_sequences' / str(epoch)
         samples_dir.mkdir(exist_ok=True)
+        if self.time_last:
+            sample_sequences = np.permute_dims(sample_sequences, (0, 2, 1))
         # setting up the plot
         matplotlib.use('Agg')
         fig, axs = plt.subplots(8, 8)
@@ -64,6 +68,7 @@ class Trainer():
         # reusing the plot
         for i in range(sample_sequences.shape[2]):
             name = self.feature_names[i] if self.feature_names is not None else f'Feature_{i}'
+            fig.suptitle(name, fontsize=32)
             for j in range(64):
                 plots[j][0].set_ydata(sample_sequences[j,:,i])
             plt.savefig(samples_dir / f'{name}.png')
@@ -91,7 +96,9 @@ class ReverseMapTrainer(Trainer):
         self.clip_grad_g = settings.model.clip_grad_g
         self.clip_grad_d = settings.model.clip_grad_d
 
-        self.zdim = settings.model.generator.in_dim
+        z_channels = settings.model.generator.in_dim
+        z_time = settings.params.window_size
+        self.z_shape = (z_channels, z_time) if self.time_last else (z_time, z_channels)
 
         self.lr_g = settings.model.lr_g
         self.lr_d = settings.model.lr_d
@@ -129,6 +136,10 @@ class ReverseMapTrainer(Trainer):
             if current_count >= n:
                 break
         real_samples = torch.cat(samples, dim=0)[:n]
+
+        if self.time_last:
+            real_samples = torch.permute(real_samples, (0, 2, 1))
+            fake_samples = np.permute_dims(fake_samples, (0, 2, 1))
         
         plot_tsne(real_samples, fake_samples, filename)
 
@@ -222,7 +233,7 @@ class ReverseMapTrainer(Trainer):
         history_G_losses = []
         history_D_losses = []
         # used to save sample sequences
-        static_z = torch.randn(64, self.window_size, self.zdim, device=self.device)
+        static_z = torch.randn(64, *self.z_shape, device=self.device)
 
         # preparing checkpoint directories
         # at this point the main directory should be created
@@ -257,7 +268,7 @@ class ReverseMapTrainer(Trainer):
 
                 self.set_requires_grad(self.discriminator, True)
                 
-                z = torch.randn(batch_size, self.window_size, self.zdim, device=self.device)
+                z = torch.randn(batch_size, *self.z_shape, device=self.device)
                 fake_sequences = self.generator(z)
                 predictions_fake = self.discriminator(fake_sequences.detach()).view(-1)
                 predictions_real = self.discriminator(real_sequences).view(-1)
@@ -274,7 +285,7 @@ class ReverseMapTrainer(Trainer):
 
                 if (i + 1) % self.discriminator_rounds == 0:
                     for _ in range(self.generator_rounds):
-                        z = torch.randn(batch_size, self.window_size, self.zdim, device=self.device)
+                        z = torch.randn(batch_size, *self.z_shape, device=self.device)
                         fake_sequences = self.generator(z)
                         predictions = self.discriminator(fake_sequences).view(-1)
                         loss_G, D_G_z2 = self.generator_step(optimizerG, predictions)
@@ -295,7 +306,7 @@ class ReverseMapTrainer(Trainer):
             if model_save_frequency and (epoch+1) % model_save_frequency == 0:
                 self.generator.eval()
                 self.save_model_checkpoints(optimizerG, optimizerD, epoch+1)
-                self.save_tsne(self.state_dir / 'tsne' / f'{epoch+1}.png', (self.window_size, self.zdim))
+                self.save_tsne(self.state_dir / 'tsne' / f'{epoch+1}.png', self.z_shape)
                 self.save_sample_sequences(self.generator(static_z).detach().cpu().numpy(), epoch+1)
                 self.generator.train()
 
@@ -303,7 +314,7 @@ class ReverseMapTrainer(Trainer):
         if not model_save_frequency or (n_epochs) % model_save_frequency != 0:
             self.generator.eval()
             self.save_model_checkpoints(optimizerG, optimizerD, n_epochs)
-            self.save_tsne(self.state_dir / 'tsne' / f'{n_epochs}.png', (self.window_size, self.zdim))
+            self.save_tsne(self.state_dir / 'tsne' / f'{n_epochs}.png', self.z_shape)
             self.save_sample_sequences(self.generator(static_z).detach().cpu().numpy(), n_epochs+1)
             self.generator.train()
 
