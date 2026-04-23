@@ -17,11 +17,13 @@ def apply_sliding_window(data, window_size, stride, labels=None):
             frame_labels.append(label)
         else:
             frame_labels.append(0)
-    return frames, frame_labels
+    return np.array(frames), np.array(frame_labels)
 
-def wrap_in_dataloader(frames, frame_labels, batch_size=32, num_workers=0, shuffle=True):
+def wrap_in_dataloader(frames, frame_labels, batch_size=32, num_workers=0, shuffle=True, time_last=False):
     X_tensor = torch.tensor(frames, dtype=torch.float32)
     y_tensor = torch.tensor(frame_labels, dtype=torch.float32)
+    if time_last:
+        X_tensor = torch.permute(X_tensor, (0, 2, 1))
     return torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(X_tensor, y_tensor),
         batch_size=batch_size,

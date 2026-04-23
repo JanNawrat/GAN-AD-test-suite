@@ -296,7 +296,7 @@ class ReverseMapTrainer(Trainer):
                 self.generator.eval()
                 self.save_model_checkpoints(optimizerG, optimizerD, epoch+1)
                 self.save_tsne(self.state_dir / 'tsne' / f'{epoch+1}.png', (self.window_size, self.zdim))
-                self.save_sample_sequences(self.generator(static_z).detach(), epoch+1)
+                self.save_sample_sequences(self.generator(static_z).detach().cpu().numpy(), epoch+1)
                 self.generator.train()
 
         # saving final models
@@ -304,7 +304,7 @@ class ReverseMapTrainer(Trainer):
             self.generator.eval()
             self.save_model_checkpoints(optimizerG, optimizerD, n_epochs)
             self.save_tsne(self.state_dir / 'tsne' / f'{n_epochs}.png', (self.window_size, self.zdim))
-            self.save_sample_sequences(self.generator(static_z).detach(), n_epochs+1)
+            self.save_sample_sequences(self.generator(static_z).detach().cpu().numpy(), n_epochs+1)
             self.generator.train()
 
         # save training history

@@ -6,7 +6,7 @@ import torch
 
 from ts_gan_bench import constants
 from ts_gan_bench.dataloader import apply_sliding_window, wrap_in_dataloader, load_SWaT
-from ts_gan_bench.model import LSTM_Generator, LSTM_Discriminator
+from ts_gan_bench.model_lstm import LSTM_Generator, LSTM_Discriminator
 from ts_gan_bench.settings import load_settings
 from ts_gan_bench.trainer import ReverseMapTrainer
 
