@@ -1,14 +1,16 @@
-import torch
-import numpy as np
-import pandas as pd
-from pathlib import Path
 import ast
+from copy import deepcopy
+from pathlib import Path
+
+import pandas as pd
+import numpy as np
+import torch
 
 def apply_sliding_window(data, window_size, stride, labels=None):
     # leave labels as None for training data
     frames = []
     frame_labels = []
-    for i in range(0, len(data) - window_size, stride):
+    for i in range(0, len(data) - window_size + 1, stride):
         frame = data[i:i+window_size,:]
         frames.append(frame)
 
@@ -94,3 +96,41 @@ def load_NASA(data_root, isa, features=None, train=True):
             raw_labels[i] = 1
 
     return raw_train_set, raw_test_set, raw_labels
+
+# =================
+# for testing
+# =================
+
+def label_snapback_region(labels, snapback_label=1., snapback_length=7200):
+    # label 1. adds snapback regions to anomalout regions
+    # label 2. labels snapback regions for possible removal
+    labels = deepcopy(labels)
+    snapback_left = 0
+    inside_anomaly = False
+    for i in range(len(labels)):
+        if labels[i] == 1:
+            inside_anomaly = True
+        else:
+            if inside_anomaly:
+                inside_anomaly = False
+                snapback_left = snapback_length
+            if snapback_left > 0:
+                snapback_left -= 1
+                labels[i] = snapback_label
+    return labels
+
+def apply_sliding_window_drop_snapback(data, window_size, stride, labels):
+    # this version of sliding window drops frames with label 2
+    frames = []
+    frame_labels = []
+    for i in range(0, len(data) - window_size, stride):
+        if 1 in labels[i:i+window_size]:
+            frame_labels.append(1)
+        elif 2 in labels[i:i+window_size]:
+            continue # frame and label are not added
+        else:
+            frame_labels.append(0)
+
+        frame = data[i:i+window_size,:]
+        frames.append(frame)
+    return np.array(frames), np.array(frame_labels)

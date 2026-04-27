@@ -7,6 +7,7 @@ import torch
 import torch.autograd as autograd
 import torch.nn as nn
 
+from ts_gan_bench.utils import set_requires_grad, add_bounded_dequantization, map_anomaly_score_to_sequence
 from ts_gan_bench.visualization import plot_tsne
 
 class Trainer():
@@ -20,31 +21,12 @@ class Trainer():
         self.device = torch.device(settings.device_name)
         self.state_dir = settings.paths.state_dir # at this point directory isn't created yet
         self.window_size = settings.params.window_size
+        self.stride = settings.params.stride
         self.train_loader = train_loader
         self.feature_names = feature_names
         self.time_last = settings.params.time_last
         self.bounded_dequantization = settings.model.bounded_dequantization
         self.actuator_idx = actuator_idx
-
-
-    def add_bounded_dequantization(self, samples):
-        samples_quantized = samples.clone()
-        actuators = samples_quantized[..., self.actuator_idx]
-        noise = torch.rand_like(actuators) * self.bounded_dequantization
-        # handling the poles (-1 and 1)
-        pole_mask = (actuators != 0)
-        actuators[pole_mask] -= torch.sign(actuators[pole_mask]) * noise[pole_mask]
-        # handling the zeros
-        zero_mask = (actuators == 0)
-        if zero_mask.any():
-            actuators[zero_mask] += noise[zero_mask] - self.bounded_dequantization / 2
-
-        samples_quantized[..., self.actuator_idx] = actuators
-        return samples_quantized
-
-    def set_requires_grad(self, model, requires_grad=True):
-        for param in model.parameters():
-            param.requires_grad = requires_grad
 
     def save_sample_sequences(self, sample_sequences, epoch):
         # preprogrammed for 64 batch size
@@ -88,6 +70,16 @@ class ReverseMapTrainer(Trainer):
         super().__init__(settings, train_loader, feature_names, actuator_idx)
         self.generator = generator
         self.discriminator = discriminator
+
+        if settings.params.compile_models:
+            self.generator = torch.compile(
+                generator,
+                mode=settings.params.compilation_mode,
+            )
+            self.discriminator = torch.compile(
+                discriminator,
+                mode=settings.params.compilation_mode,
+            )
 
         self.loss = settings.model.loss
         self.criterion_bce = nn.BCEWithLogitsLoss()
@@ -165,28 +157,42 @@ class ReverseMapTrainer(Trainer):
         gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
         return gradient_penalty
 
-    def discriminator_step(self, optimizerD, predictions_fake, predictions_real, samples_fake, samples_real):
+    def discriminator_step(self, optimizerD, predictions, samples_fake, samples_real):
+        # predictions - batch of precitions on fake data
+        #   + batch of predictions on real data concatenated 
         optimizerD.zero_grad()
 
         if self.loss == 'bce':
-            # fake data
-            fake_labels = torch.zeros_like(predictions_fake)
-            loss_fake = self.criterion_bce(predictions_fake, fake_labels)
-            loss_fake.backward()
-            predictions_fake_log = torch.sigmoid(predictions_fake).mean()
-            # real data
-            real_labels = torch.full_like(predictions_real, self.disc_real_label)
-            loss_real = self.criterion_bce(predictions_real, real_labels)
-            loss_real.backward()
-            predictions_real_log = torch.sigmoid(predictions_real).mean()
-
-            total_loss = loss_fake + loss_real
-        elif self.loss == 'wasserstein':
-            gradient_penalty = self.compute_gradient_penalty(samples_fake, samples_real)
-            total_loss = -torch.mean(predictions_real) + torch.mean(predictions_fake) + self.gp_weight * gradient_penalty
+            batch_size = predictions.shape[0] // 2
+            fake_labels = torch.zeros_like(predictions[:batch_size])
+            real_labels = torch.full_like(predictions[:batch_size], self.disc_real_label)
+            combined_labels = torch.cat([fake_labels, real_labels], dim=0)
+            total_loss = self.criterion_bce(predictions, combined_labels)
             total_loss.backward()
-            predictions_fake_log = torch.mean(predictions_fake)
-            predictions_real_log = torch.mean(predictions_real)
+
+            # logging
+            predictions_fake_log = torch.sigmoid(predictions[:batch_size]).mean()
+            predictions_real_log = torch.sigmoid(predictions[batch_size:]).mean()
+
+            # # fake data
+            # fake_labels = torch.zeros_like(predictions_fake)
+            # loss_fake = self.criterion_bce(predictions_fake, fake_labels)
+            # loss_fake.backward()
+            # predictions_fake_log = torch.sigmoid(predictions_fake).mean()
+            # # real data
+            # real_labels = torch.full_like(predictions_real, self.disc_real_label)
+            # loss_real = self.criterion_bce(predictions_real, real_labels)
+            # loss_real.backward()
+            # predictions_real_log = torch.sigmoid(predictions_real).mean()
+
+            # total_loss = loss_fake + loss_real
+        # elif self.loss == 'wasserstein':
+        #     total_loss = -torch.mean(predictions_real) + torch.mean(predictions_fake)
+        #     if self.gp_weight != 0:
+        #         total_loss += self.gp_weight * self.compute_gradient_penalty(samples_fake, samples_real)
+        #     total_loss.backward()
+        #     predictions_fake_log = torch.mean(predictions_fake)
+        #     predictions_real_log = torch.mean(predictions_real)
 
         if self.clip_grad_d:
             nn.utils.clip_grad_norm_(
@@ -260,25 +266,35 @@ class ReverseMapTrainer(Trainer):
                 # Bounded dequantization
                 # ==================================
                 if self.bounded_dequantization:
-                    real_sequences = self.add_bounded_dequantization(real_sequences)
+                    real_sequences = add_bounded_dequantization(
+                        real_sequences,
+                        self.bounded_dequantization,
+                        self.actuator_idx
+                    )
 
                 # ==================================
                 # D training
                 # ==================================
 
-                self.set_requires_grad(self.discriminator, True)
+                set_requires_grad(self.discriminator, True)
                 
                 z = torch.randn(batch_size, *self.z_shape, device=self.device)
                 fake_sequences = self.generator(z)
-                predictions_fake = self.discriminator(fake_sequences.detach()).view(-1)
-                predictions_real = self.discriminator(real_sequences).view(-1)
-                loss_D, D_G_z1, D_x = self.discriminator_step(optimizerD, predictions_fake, predictions_real, fake_sequences, real_sequences)
+                combined_sequences = torch.cat(
+                    [fake_sequences.detach(), real_sequences],
+                    dim=0,
+                )
+                predictions = self.discriminator(combined_sequences).view(-1)
+                # predictions_fake = self.discriminator(fake_sequences.detach()).view(-1)
+                # predictions_real = self.discriminator(real_sequences).view(-1)
+                # loss_D, D_G_z1, D_x = self.discriminator_step(optimizerD, predictions_fake, predictions_real, fake_sequences, real_sequences)
+                loss_D, D_G_z1, D_x = self.discriminator_step(optimizerD, predictions, fake_sequences, real_sequences)
 
                 # ==================================
                 # G training
                 # ==================================
 
-                self.set_requires_grad(self.discriminator, False)
+                set_requires_grad(self.discriminator, False)
                 # setting default values in case generator doesn't run in this iteration
                 loss_G = history_G_losses[-1] if len(history_G_losses) > 0 else 0.
                 D_G_z2 = D_G_z1
@@ -326,3 +342,90 @@ class ReverseMapTrainer(Trainer):
 
         with open(self.state_dir / 'loss_history.json', 'w') as f:
             json.dump(loss_history, f)
+
+    def invert_latent_vector(self, generator, target, z_shape, num_epochs, lr=0.01):
+        generator.eval()
+        self.set_requires_grad(generator, False)
+        generator.to(self.device)
+        target = target.to(self.device)
+
+        batch_size = target.size(0)
+        z = torch.randn(batch_size, *z_shape, device=self.device)
+        z.requires_grad = True
+
+        optimizer = torch.optim.Adam([z], lr=lr)
+        criterion = nn.MSELoss()
+
+        for epoch in range(num_epochs):
+            optimizer.zero_grad()
+            generated_sequence = generator(z)
+            loss = criterion(generated_sequence, target)
+            prior_loss = torch.mean(z ** 2)
+            total_loss = loss+  0.1 * prior_loss
+            total_loss.backward()
+            optimizer.step()
+        
+        return z.detach()
+    
+    def test(self, test_loader, test_name):
+        tests_dir = self.state_dir / 'tests' / test_name
+        tests_dir.mkdir(parents=True, exist_ok=True)
+
+        mse = nn.MSELoss(reduction='none')
+        # mae = nn.L1Loss(reduction='none')
+        reduction_dim = 1 if self.time_last else 2
+        reconstruction_mse = []
+        discriminator_predictions = []
+
+        for X, _ in test_loader:
+            X = X.to(self.device)
+            z = torch.randn(X.shape[0], *self.z_shape, device=self.device)
+            # get z
+
+            reconstruction = self.generator(z)
+            pred = self.generator(X)
+            if self.loss == 'bce':
+                pred = nn.functional.sigmoid(pred)
+
+            reconstruction_mse.append(
+                mse(reconstruction, X).mean(dim=reduction_dim),
+            )
+            discriminator_predictions.append(pred)
+
+        mse_map = map_anomaly_score_to_sequence(
+            reconstruction_mse,
+            self.window_size,
+            self.stride,
+        )
+
+        np.save(tests_dir / 'mse.npy', mse_map)
+
+    def test_stats(self, test_loader, test_settings):
+        stats_dir = self.state_dir / 'stats'
+        stats_dir.mkdir(exist_ok=True)
+
+        stats = {}
+
+        data = []
+        labels = []
+        all_reconstructions = []
+        all_predictions = []
+
+        for backprogapation_steps in [10, 20, 30, 40, 50]:
+            for X, y in self.train_loader:
+                X = X.to(self.device)
+                z = self.invert_latent_vector(
+                    self.generator,
+                    X,
+                    self.z_shape,
+                    backprogapation_steps
+                )
+                data.append(X)
+                labels.append(y)
+                all_reconstructions.append(self.generator(z))
+                all_predictions.append(self.discriminator(X))
+
+        # TODO
+        # very basic setup
+
+

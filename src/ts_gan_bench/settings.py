@@ -88,8 +88,8 @@ class ReverseMapConfig(BaseModel):
     # optimizer setup
     lr_g: float
     lr_d: float
-    betas_g: list[float] = [0.5, 0.999]
-    betas_d: list[float] = [0.5, 0.999]
+    betas_g: List[float] = [0.5, 0.999]
+    betas_d: List[float] = [0.5, 0.999]
     # training ratio
     generator_rounds: int
     discriminator_rounds: int
@@ -107,6 +107,9 @@ class Params(BaseModel):
     stride: int
     batch_size: int
     time_last: bool = False # transforms data to (batch, features, time), used for TCN
+    compile_models: bool = False
+    compilation_mode: str = 'reduce-overhead'
+    use_automatic_precision: bool = False
     num_workers: int
     shuffle: bool
 

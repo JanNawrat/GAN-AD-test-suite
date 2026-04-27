@@ -17,6 +17,7 @@ class TemporalBlock(nn.Module):
         out_dim,
         kernel_size,
         dilation,
+        relu_slope=None,
         dropout=0.2,
         use_spectral_norm=False,
     ):
@@ -30,7 +31,7 @@ class TemporalBlock(nn.Module):
             dilation=dilation,
         )
         self.chomp1 = Chomp1d(padding)
-        self.relu1 = nn.ReLU()
+        self.relu1 = nn.LeakyReLU(relu_slope) if relu_slope else nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
         self.conv2 = nn.Conv1d(
             out_dim,
@@ -122,7 +123,7 @@ class TCN_Generator(nn.Module):
                 'out_dim': self.out_dim,
                 'kernel_size': self.kernel_size,
                 'num_channels': self.num_channels,
-                'dialtions': self.dilations,
+                'dilations': self.dilations,
                 'dropout': self.dropout,
             },
             'weights': self.state_dict(),
@@ -162,6 +163,7 @@ class TCN_Discriminator(nn.Module):
                 out_dim=num_channels[i],
                 kernel_size=kernel_size,
                 dilation=dilations[i],
+                relu_slope=0.2,
                 dropout=dropout,
                 use_spectral_norm=True,
             ))
@@ -182,6 +184,17 @@ class TCN_Discriminator(nn.Module):
                 'dilations': self.dilations,
                 'dropout': self.dropout,
             },
-            'weight': self.state_dict(),
+            'weights': self.state_dict(),
         }
         torch.save(checkpoint, path)
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        path,
+        map_location,
+    ):
+        checkpoint = torch.load(path, map_location=map_location)
+        model = cls(**checkpoint.pop('config'))
+        model.load_state_dict(checkpoint.pop('weights'))
+        return model
