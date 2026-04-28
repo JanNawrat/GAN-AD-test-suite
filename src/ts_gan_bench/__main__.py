@@ -70,8 +70,11 @@ def load_dataset(settings): # temporarily only SWaT, TODO: improve
     train_loader = wrap_in_dataloader(
         training_frames,
         training_frame_labels,
-        settings.params.batch_size,
-        settings.params.num_workers,
+        batch_size=settings.params.batch_size,
+        num_workers=settings.params.num_workers,
+        pin_memory=settings.params.pin_memory,
+        prefetch_factor=settings.params.prefetch_factor,
+        persistent_workers=settings.params.persistent_workers,
         time_last=settings.params.time_last,
     )
     return train_loader, feature_names, actuator_idx

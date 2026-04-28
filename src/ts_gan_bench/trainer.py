@@ -27,6 +27,7 @@ class Trainer():
         self.time_last = settings.params.time_last
         self.bounded_dequantization = settings.model.bounded_dequantization
         self.actuator_idx = actuator_idx
+        self.use_automatic_precision = settings.params.use_automatic_precision
 
     def save_sample_sequences(self, sample_sequences, epoch):
         # preprogrammed for 64 batch size
@@ -156,11 +157,56 @@ class ReverseMapTrainer(Trainer):
         gradients = gradients.reshape(batch_size, -1)
         gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
         return gradient_penalty
+    
+    def discriminator_step(self, optimizerD, real_sequences, z):
+        # concatenates real and fake data
+        # this won't work if using batch norm
+        optimizerD.zero_grad(set_to_none=True)
 
-    def discriminator_step(self, optimizerD, predictions, samples_fake, samples_real):
+        # BCE loss (with logits)
+        if self.loss == 'bce':
+            batch_size = real_sequences.shape[0]
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=torch.bfloat16,
+                enabled=self.use_automatic_precision,
+            ):
+                fake_sequences = self.generator(z).detach()
+                combined_sequences = torch.concat(
+                    [fake_sequences, real_sequences],
+                    dim=0,
+                )
+                predictions = self.discriminator(combined_sequences).view(-1)
+                fake_labels = torch.zeros_like(predictions[:batch_size])
+                real_labels = torch.full_like(predictions[batch_size:], self.disc_real_label)
+                combined_labels = torch.concat(
+                    [fake_labels, real_labels],
+                    dim=0,
+                )
+                loss = self.criterion_bce(predictions, combined_labels)
+
+            # logging
+            predictions_fake_log = torch.sigmoid(predictions[:batch_size].detach().float()).mean()
+            predictions_real_log = torch.sigmoid(predictions[batch_size:].detach().float()).mean()
+
+        elif self.loss == 'wasserstein':
+            # TODO
+            pass
+
+        loss.backward()
+        if self.clip_grad_d:
+            nn.utils.clip_grad_norm_(
+                self.discriminator.parameters(),
+                max_norm=self.clip_grad_d,
+            )
+        optimizerD.step()
+        return loss.item(), predictions_fake_log.item(), predictions_real_log.item()
+
+
+    def _discriminator_step(self, optimizerD, predictions, samples_fake, samples_real):
         # predictions - batch of precitions on fake data
         #   + batch of predictions on real data concatenated 
-        optimizerD.zero_grad()
+        optimizerD.zero_grad(set_to_none=True)
 
         if self.loss == 'bce':
             batch_size = predictions.shape[0] // 2
@@ -201,9 +247,39 @@ class ReverseMapTrainer(Trainer):
             )
         optimizerD.step()
         return total_loss.item(), predictions_fake_log.item(), predictions_real_log.item()
+    
+    def generator_step(self, optimizerG, z):
+        optimizerG.zero_grad(set_to_none=True)
 
-    def generator_step(self, optimizerG, predictions):
-        optimizerG.zero_grad()
+        # BCE loss (from logits)
+        if self.loss == 'bce':
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=torch.bfloat16,
+                enabled=self.use_automatic_precision,
+            ):
+                fake_sequences = self.generator(z)
+                predictions = self.discriminator(fake_sequences)
+                real_labels = torch.ones_like(predictions)
+                loss = self.criterion_bce(predictions, real_labels)
+                # loss = -nn.functional.logsigmoid(predictions).mean()
+            predictions_log = torch.sigmoid(predictions.detach().float()).mean()
+        elif self.loss == 'wasserstein':
+            # TODO
+            pass
+
+        loss.backward()
+        if self.clip_grad_g:
+            nn.utils.clip_grad_norm_(
+                self.generator.parameters(),
+                max_norm=self.clip_grad_g,
+            )
+        optimizerG.step()
+        return loss.item(), predictions_log.item()
+
+
+    def _generator_step(self, optimizerG, predictions):
+        optimizerG.zero_grad(set_to_none=True)
 
         # BCE loss (from logits)
         if self.loss == 'bce':
@@ -277,18 +353,9 @@ class ReverseMapTrainer(Trainer):
                 # ==================================
 
                 set_requires_grad(self.discriminator, True)
-                
+
                 z = torch.randn(batch_size, *self.z_shape, device=self.device)
-                fake_sequences = self.generator(z)
-                combined_sequences = torch.cat(
-                    [fake_sequences.detach(), real_sequences],
-                    dim=0,
-                )
-                predictions = self.discriminator(combined_sequences).view(-1)
-                # predictions_fake = self.discriminator(fake_sequences.detach()).view(-1)
-                # predictions_real = self.discriminator(real_sequences).view(-1)
-                # loss_D, D_G_z1, D_x = self.discriminator_step(optimizerD, predictions_fake, predictions_real, fake_sequences, real_sequences)
-                loss_D, D_G_z1, D_x = self.discriminator_step(optimizerD, predictions, fake_sequences, real_sequences)
+                loss_D, D_G_z1, D_x = self.discriminator_step(optimizerD, real_sequences, z)
 
                 # ==================================
                 # G training
@@ -299,12 +366,10 @@ class ReverseMapTrainer(Trainer):
                 loss_G = history_G_losses[-1] if len(history_G_losses) > 0 else 0.
                 D_G_z2 = D_G_z1
 
-                if (i + 1) % self.discriminator_rounds == 0:
+                if (i + 1) & self.discriminator_rounds == 0:
                     for _ in range(self.generator_rounds):
                         z = torch.randn(batch_size, *self.z_shape, device=self.device)
-                        fake_sequences = self.generator(z)
-                        predictions = self.discriminator(fake_sequences).view(-1)
-                        loss_G, D_G_z2 = self.generator_step(optimizerG, predictions)
+                        loss_G, D_G_z2 = self.generator_step(optimizerG, z)
 
                 # output status
                 if i % 50 == 0:

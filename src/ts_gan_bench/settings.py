@@ -110,7 +110,10 @@ class Params(BaseModel):
     compile_models: bool = False
     compilation_mode: str = 'reduce-overhead'
     use_automatic_precision: bool = False
-    num_workers: int
+    num_workers: int = 2
+    pin_memory: bool = True
+    prefetch_factor: int = 2
+    persistent_workers: bool = True
     shuffle: bool
 
 class Settings(BaseModel):
