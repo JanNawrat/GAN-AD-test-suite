@@ -9,7 +9,7 @@ from ts_gan_bench.dataloader import apply_sliding_window, wrap_in_dataloader, lo
 from ts_gan_bench.model_lstm import LSTM_Generator, LSTM_Discriminator
 from ts_gan_bench.model_tcn import TCN_Generator, TCN_Discriminator
 from ts_gan_bench.settings import load_settings
-from ts_gan_bench.trainer import ReverseMapTrainer
+from ts_gan_bench.trainers import GANTrainer, AEGANTrainer
 
 def parse_arguments():
     parser = ArgumentParser()
@@ -85,18 +85,40 @@ def main():
     # print(settings.model_dump_json(indent=4))
 
     # load models
-    generator = load_generator(settings.model.generator).to(torch.device(settings.device_name))
+    if settings.model.type == 'reverse_map':
+        generator = load_generator(settings.model.generator).to(torch.device(settings.device_name))
+    elif settings.model.type == 'ae':
+        encoder = load_generator(settings.model.encoder).to(torch.device(settings.device_name))
+        decoder = load_generator(settings.model.decoder).to(torch.device(settings.device_name))
     discriminator = load_discriminator(settings.model.discriminator).to(torch.device(settings.device_name))
     
     # load dataset
     train_loader, feature_names, actuator_idx = load_dataset(settings)
 
+    # attempting to prepare the state directory
+    state_dir = settings.paths.state_dir
+    try:
+        state_dir.mkdir(parents=True, exist_ok=args.overwrite)
+    except:
+        print(f'Couldn\'t create directory {state_dir}. Make sure the name isn\'t already taken.')
+        raise SystemExit(1)
+
     # initialize trainer
     match settings.model.type:
         case 'reverse_map':
-            trainer = ReverseMapTrainer(
+            trainer = GANTrainer(
                 settings=settings,
                 generator=generator,
+                discriminator=discriminator,
+                train_loader=train_loader,
+                feature_names=feature_names,
+                actuator_idx=actuator_idx,
+            )
+        case 'ae':
+            trainer = AEGANTrainer(
+                settings=settings,
+                encoder=encoder,
+                decoder=decoder,
                 discriminator=discriminator,
                 train_loader=train_loader,
                 feature_names=feature_names,
@@ -105,14 +127,6 @@ def main():
         case _:
             print('Incorrect model type!')
             raise SystemExit(1)
-        
-    # attempting to prepare the state directory
-    state_dir = settings.paths.state_dir
-    try:
-        state_dir.mkdir(parents=True, exist_ok=args.overwrite)
-    except:
-        print(f'Couldn\'t create directory {state_dir}. Make sure the name isn\'t already taken.')
-        raise SystemExit(1)
     
     # saving setting (only the original .toml file)
     shutil.copyfile(

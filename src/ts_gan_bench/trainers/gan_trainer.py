@@ -1,64 +1,15 @@
 import json
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.autograd as autograd
 import torch.nn as nn
 
+from ts_gan_bench.trainers.base_trainer import BaseTrainer
 from ts_gan_bench.utils import set_requires_grad, add_bounded_dequantization, map_anomaly_score_to_sequence
 from ts_gan_bench.visualization import plot_tsne
 
-class Trainer():
-    def __init__(
-            self,
-            settings,
-            train_loader,
-            feature_names=None,
-            actuator_idx=None,
-        ):
-        self.device = torch.device(settings.device_name)
-        self.state_dir = settings.paths.state_dir # at this point directory isn't created yet
-        self.window_size = settings.params.window_size
-        self.stride = settings.params.stride
-        self.train_loader = train_loader
-        self.feature_names = feature_names
-        self.time_last = settings.params.time_last
-        self.bounded_dequantization = settings.model.bounded_dequantization
-        self.actuator_idx = actuator_idx
-        self.use_automatic_precision = settings.params.use_automatic_precision
-
-    def save_sample_sequences(self, sample_sequences, epoch):
-        # preprogrammed for 64 batch size
-        samples_dir = self.state_dir / 'sample_sequences' / str(epoch)
-        samples_dir.mkdir(exist_ok=True)
-        if self.time_last:
-            sample_sequences = np.permute_dims(sample_sequences, (0, 2, 1))
-        # setting up the plot
-        matplotlib.use('Agg')
-        fig, axs = plt.subplots(8, 8)
-        fig.set_size_inches(20, 20)
-        plots = []
-        for k in range(8):
-            for l in range(8):
-                ax = axs[k,l]
-                plot = ax.plot([0. for i in range(sample_sequences.shape[1])])
-                plots.append(plot)
-                ax.set_ylim([-1.1, 1.1])
-                ax.set_yticks([-1, 0, 1])
-                ax.set_xticks([0, sample_sequences.shape[1]/2, sample_sequences.shape[1]])
-        # reusing the plot
-        for i in range(sample_sequences.shape[2]):
-            name = self.feature_names[i] if self.feature_names is not None else f'Feature_{i}'
-            fig.suptitle(name, fontsize=32)
-            for j in range(64):
-                plots[j][0].set_ydata(sample_sequences[j,:,i])
-            plt.savefig(samples_dir / f'{name}.png')
-        plt.close(fig)
-        
-
-class ReverseMapTrainer(Trainer):
+class GANTrainer(BaseTrainer):
     def __init__(
             self,
             settings,
@@ -201,52 +152,6 @@ class ReverseMapTrainer(Trainer):
             )
         optimizerD.step()
         return loss.item(), predictions_fake_log.item(), predictions_real_log.item()
-
-
-    def _discriminator_step(self, optimizerD, predictions, samples_fake, samples_real):
-        # predictions - batch of precitions on fake data
-        #   + batch of predictions on real data concatenated 
-        optimizerD.zero_grad(set_to_none=True)
-
-        if self.loss == 'bce':
-            batch_size = predictions.shape[0] // 2
-            fake_labels = torch.zeros_like(predictions[:batch_size])
-            real_labels = torch.full_like(predictions[:batch_size], self.disc_real_label)
-            combined_labels = torch.cat([fake_labels, real_labels], dim=0)
-            total_loss = self.criterion_bce(predictions, combined_labels)
-            total_loss.backward()
-
-            # logging
-            predictions_fake_log = torch.sigmoid(predictions[:batch_size]).mean()
-            predictions_real_log = torch.sigmoid(predictions[batch_size:]).mean()
-
-            # # fake data
-            # fake_labels = torch.zeros_like(predictions_fake)
-            # loss_fake = self.criterion_bce(predictions_fake, fake_labels)
-            # loss_fake.backward()
-            # predictions_fake_log = torch.sigmoid(predictions_fake).mean()
-            # # real data
-            # real_labels = torch.full_like(predictions_real, self.disc_real_label)
-            # loss_real = self.criterion_bce(predictions_real, real_labels)
-            # loss_real.backward()
-            # predictions_real_log = torch.sigmoid(predictions_real).mean()
-
-            # total_loss = loss_fake + loss_real
-        # elif self.loss == 'wasserstein':
-        #     total_loss = -torch.mean(predictions_real) + torch.mean(predictions_fake)
-        #     if self.gp_weight != 0:
-        #         total_loss += self.gp_weight * self.compute_gradient_penalty(samples_fake, samples_real)
-        #     total_loss.backward()
-        #     predictions_fake_log = torch.mean(predictions_fake)
-        #     predictions_real_log = torch.mean(predictions_real)
-
-        if self.clip_grad_d:
-            nn.utils.clip_grad_norm_(
-                self.discriminator.parameters(),
-                max_norm=self.clip_grad_d,
-            )
-        optimizerD.step()
-        return total_loss.item(), predictions_fake_log.item(), predictions_real_log.item()
     
     def generator_step(self, optimizerG, z):
         optimizerG.zero_grad(set_to_none=True)
@@ -276,28 +181,6 @@ class ReverseMapTrainer(Trainer):
             )
         optimizerG.step()
         return loss.item(), predictions_log.item()
-
-
-    def _generator_step(self, optimizerG, predictions):
-        optimizerG.zero_grad(set_to_none=True)
-
-        # BCE loss (from logits)
-        if self.loss == 'bce':
-            real_labels = torch.ones_like(predictions)
-            loss = self.criterion_bce(predictions, real_labels)
-            predictions_log = torch.sigmoid(predictions).mean()
-        elif self.loss == 'wasserstein':
-            loss = -torch.mean(predictions)
-            predictions_log = torch.mean(predictions)
-
-        loss.backward()
-        if self.clip_grad_g:
-            nn.utils.clip_grad_norm_(
-                self.generator.parameters(),
-                max_norm=self.clip_grad_g,
-            )
-        optimizerG.step()
-        return loss.item(), predictions_log.item()    
 
     def train(self, n_epochs, model_save_frequency):
         optimizerG = torch.optim.Adam(
@@ -366,7 +249,7 @@ class ReverseMapTrainer(Trainer):
                 loss_G = history_G_losses[-1] if len(history_G_losses) > 0 else 0.
                 D_G_z2 = D_G_z1
 
-                if (i + 1) & self.discriminator_rounds == 0:
+                if (i + 1) % self.discriminator_rounds == 0:
                     for _ in range(self.generator_rounds):
                         z = torch.randn(batch_size, *self.z_shape, device=self.device)
                         loss_G, D_G_z2 = self.generator_step(optimizerG, z)
@@ -407,30 +290,6 @@ class ReverseMapTrainer(Trainer):
 
         with open(self.state_dir / 'loss_history.json', 'w') as f:
             json.dump(loss_history, f)
-
-    def invert_latent_vector(self, generator, target, z_shape, num_epochs, lr=0.01):
-        generator.eval()
-        self.set_requires_grad(generator, False)
-        generator.to(self.device)
-        target = target.to(self.device)
-
-        batch_size = target.size(0)
-        z = torch.randn(batch_size, *z_shape, device=self.device)
-        z.requires_grad = True
-
-        optimizer = torch.optim.Adam([z], lr=lr)
-        criterion = nn.MSELoss()
-
-        for epoch in range(num_epochs):
-            optimizer.zero_grad()
-            generated_sequence = generator(z)
-            loss = criterion(generated_sequence, target)
-            prior_loss = torch.mean(z ** 2)
-            total_loss = loss+  0.1 * prior_loss
-            total_loss.backward()
-            optimizer.step()
-        
-        return z.detach()
     
     def test(self, test_loader, test_name):
         tests_dir = self.state_dir / 'tests' / test_name
@@ -439,58 +298,38 @@ class ReverseMapTrainer(Trainer):
         mse = nn.MSELoss(reduction='none')
         # mae = nn.L1Loss(reduction='none')
         reduction_dim = 1 if self.time_last else 2
-        reconstruction_mse = []
-        discriminator_predictions = []
+        reconstruction_mse = None
+        discriminator_predictions = None
+
+        self.generator.eval()
+        self.discriminator.eval()
 
         for X, _ in test_loader:
             X = X.to(self.device)
             z = torch.randn(X.shape[0], *self.z_shape, device=self.device)
             # get z
+            with torch.no_grad():
+                reconstruction = self.generator(z)
+                pred = self.discriminator(X)
+                if self.loss == 'bce':
+                    pred = nn.functional.sigmoid(pred)
 
-            reconstruction = self.generator(z)
-            pred = self.generator(X)
-            if self.loss == 'bce':
-                pred = nn.functional.sigmoid(pred)
-
-            reconstruction_mse.append(
-                mse(reconstruction, X).mean(dim=reduction_dim),
-            )
-            discriminator_predictions.append(pred)
+                current_mse = mse(reconstruction, X).mean(dim=reduction_dim)
+                if reconstruction_mse is None:
+                    reconstruction_mse = current_mse
+                else:
+                    reconstruction_mse = torch.concat([reconstruction_mse, current_mse], dim=0)
+                
+                if discriminator_predictions is None:
+                    discriminator_predictions = pred
+                else:
+                    discriminator_predictions = torch.concat([discriminator_predictions, pred], dim=0)
 
         mse_map = map_anomaly_score_to_sequence(
-            reconstruction_mse,
+            np.array(reconstruction_mse),
             self.window_size,
             self.stride,
         )
 
         np.save(tests_dir / 'mse.npy', mse_map)
-
-    def test_stats(self, test_loader, test_settings):
-        stats_dir = self.state_dir / 'stats'
-        stats_dir.mkdir(exist_ok=True)
-
-        stats = {}
-
-        data = []
-        labels = []
-        all_reconstructions = []
-        all_predictions = []
-
-        for backprogapation_steps in [10, 20, 30, 40, 50]:
-            for X, y in self.train_loader:
-                X = X.to(self.device)
-                z = self.invert_latent_vector(
-                    self.generator,
-                    X,
-                    self.z_shape,
-                    backprogapation_steps
-                )
-                data.append(X)
-                labels.append(y)
-                all_reconstructions.append(self.generator(z))
-                all_predictions.append(self.discriminator(X))
-
-        # TODO
-        # very basic setup
-
-
+        return mse_map

@@ -48,6 +48,24 @@ GeneratorConfig = Annotated[
 ]
 
 # =============
+# Encoder
+# =============
+class TCNEncoderConfig(BaseModel):
+    type: Literal['tcn']
+    in_dim: int
+    out_dim: int
+    kernel_size: int
+    num_channels: List[int]
+    dilations: List[int]
+    dropout: float
+    tanh_on_output: bool = False
+
+EncoderConfig = Annotated[
+    Union[TCNEncoderConfig],
+    Field(discriminator='type')
+]
+
+# =============
 # Discriminator
 # =============
 class LSTMDiscriminatorConfig(BaseModel):
@@ -91,11 +109,36 @@ class ReverseMapConfig(BaseModel):
     betas_g: List[float] = [0.5, 0.999]
     betas_d: List[float] = [0.5, 0.999]
     # training ratio
-    generator_rounds: int
-    discriminator_rounds: int
+    generator_rounds: int = 1
+    discriminator_rounds: int = 1
+
+class AutoencoderConfig(BaseModel):
+    type: Literal['ae']
+    # models
+    encoder: EncoderConfig
+    decoder: GeneratorConfig
+    discriminator: DiscriminatorConfig
+    # losses
+    adversarial_loss: str = 'bce'
+    adversarial_loss_weight: float = 1.0
+    reconstruction_loss: str = 'mse'
+    reconstruction_loss_weight: float = 100.0
+    # stabilization techniques
+    disc_real_label: float = 1.0 # used for label smoothing in BCE
+    clip_grad_g: float = 0.0
+    clip_grad_d: float = 0.0
+    bounded_dequantization: float = 0.0 # used for actuators if present
+    # optimizer setup
+    lr_g: float
+    lr_d: float
+    betas_g: List[float] = [0.5, 0.999]
+    betas_d: List[float] = [0.5, 0.999]
+    # trianing ratio
+    generator_rounds: int = 1
+    discriminator_rounds: int = 1
 
 ModelConfig = Annotated[
-    Union[ReverseMapConfig],
+    Union[ReverseMapConfig, AutoencoderConfig],
     Field(discriminator='type')
 ]
 
@@ -115,6 +158,9 @@ class Params(BaseModel):
     prefetch_factor: int = 2
     persistent_workers: bool = True
     shuffle: bool
+
+class Test(BaseModel):
+    backpropagation_steps: List[int] = [5, 10, 15, 20, 25, 30]
 
 class Settings(BaseModel):
     paths: Paths

@@ -85,6 +85,7 @@ class TCN_Generator(nn.Module):
         num_channels=[128, 128, 128, 128],
         dilations=[1, 2, 4, 8],
         dropout=0.2,
+        tanh_on_output=True,
     ):
         super().__init__()
         self.in_dim = in_dim
@@ -93,6 +94,7 @@ class TCN_Generator(nn.Module):
         self.num_channels = num_channels
         self.dilations = dilations
         self.dropout = dropout
+        self.tanh_on_output = tanh_on_output
         layers = []
         for i in range(len(num_channels)):
             layers.append(TemporalBlock(
@@ -109,12 +111,12 @@ class TCN_Generator(nn.Module):
             out_channels=out_dim,
             kernel_size=1,
         ))
-        self.tanh = nn.Tanh()
+        self.activation = nn.Tanh() if tanh_on_output else nn.Identity()
 
     def forward(self, x):
         x = self.tcn(x)
         x = self.final_conv(x)
-        return self.tanh(x)
+        return self.activation(x)
     
     def save(self, path):
         checkpoint = {
@@ -125,6 +127,7 @@ class TCN_Generator(nn.Module):
                 'num_channels': self.num_channels,
                 'dilations': self.dilations,
                 'dropout': self.dropout,
+                'tanh_on_output': self.tanh_on_output,
             },
             'weights': self.state_dict(),
         }
