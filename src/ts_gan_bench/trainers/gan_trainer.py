@@ -1,9 +1,7 @@
-import json
-
-import numpy as np
 import torch
-import torch.autograd as autograd
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 
 from ts_gan_bench.trainers.base_trainer import BaseTrainer
 from ts_gan_bench.utils import set_requires_grad, add_bounded_dequantization, map_anomaly_score_to_sequence
@@ -20,204 +18,52 @@ class GANTrainer(BaseTrainer):
             actuator_idx=None,
         ):
         super().__init__(settings, train_loader, feature_names, actuator_idx)
+        # networks
         self.generator = generator
         self.discriminator = discriminator
 
-        if settings.params.compile_models:
-            self.generator = torch.compile(
-                generator,
-                mode=settings.params.compilation_mode,
-            )
-            self.discriminator = torch.compile(
-                discriminator,
-                mode=settings.params.compilation_mode,
-            )
+        # optimizers
+        self.optimizer_g = torch.optim.Adam(
+            self.generator.parameters(),
+            lr=settings.model.lr_g,
+            betas=settings.model.betas_g,
+        )
+        self.optimizer_d = torch.optim.Adam(
+            self.discriminator.parameters(),
+            lr=settings.model.lr_d,
+            betas=settings.model.betas_d,
+        )
 
+        # training parameters
         self.loss = settings.model.loss
         self.criterion_bce = nn.BCEWithLogitsLoss()
         self.gp_weight = settings.model.gp_weight
         self.disc_real_label = settings.model.disc_real_label # used for label smoothing
         self.clip_grad_g = settings.model.clip_grad_g
         self.clip_grad_d = settings.model.clip_grad_d
+        self.generator_rounds = settings.model.generator_rounds
+        self.discriminator_rounds = settings.model.discriminator_rounds
 
+        # data dims
         z_channels = settings.model.generator.in_dim
         z_time = settings.params.window_size
         self.z_shape = (z_channels, z_time) if self.time_last else (z_time, z_channels)
 
-        self.lr_g = settings.model.lr_g
-        self.lr_d = settings.model.lr_d
-        self.betas_g = settings.model.betas_g
-        self.betas_d = settings.model.betas_d
-        self.generator_rounds = settings.model.generator_rounds
-        self.discriminator_rounds = settings.model.discriminator_rounds
+        # preparing directories
+        for dir in ['weights/generator', 'weights/discriminator', 'weights/optimizer_g', 'weights/optimizer_d', 'tsne', 'samples', 'logs']:
+            (self.state_dir / dir).mkdir(parents=True, exist_ok=True)
 
-    def save_model_checkpoints(self, optimizerG, optimizerD, epoch):
-        self.generator.save(
-            self.state_dir / 'generator' / f'G_{epoch}.pth'
-        )
-        self.discriminator.save(
-            self.state_dir / 'discriminator' / f'D_{epoch}.pth',
-        )
-        torch.save(
-            optimizerG.state_dict(),
-            self.state_dir / 'optim_generator' / f'G_optim_{epoch}.pth'
-        )
-        torch.save(
-            optimizerD.state_dict(),
-            self.state_dir / 'optim_discriminator' / f'D_optim_{epoch}.pth',
-        )
+        # initializing tensorboard
+        self.writer = SummaryWriter(log_dir=self.state_dir / 'logs')
 
-    def save_tsne(self, filename, z_shape, n=1000, from_hidden_states=False):
-        self.generator.eval()
-        with torch.no_grad():
-            z = torch.randn(n, z_shape[0], z_shape[1], device=self.device)
-            fake_samples = self.generator(z).cpu().numpy()
-        samples = []
-        current_count = 0
-        for X, _ in self.train_loader:
-            samples.append(X)
-            current_count += X.size(0)
-            if current_count >= n:
-                break
-        real_samples = torch.cat(samples, dim=0)[:n]
-
-        if self.time_last:
-            real_samples = torch.permute(real_samples, (0, 2, 1))
-            fake_samples = np.permute_dims(fake_samples, (0, 2, 1))
-        
-        plot_tsne(real_samples, fake_samples, filename)
-
-    def compute_gradient_penalty(self, samples_fake, samples_real):
-        batch_size = samples_real.size(0)
-        alpha_shape = [batch_size] + [1] * (samples_real.dim() - 1)
-        alpha = torch.rand(alpha_shape, device=self.device)
-        interpolates = (alpha * samples_real + ((1 - alpha) * samples_fake)).requires_grad_(True)
-
-        with torch.backends.cudnn.flags(enabled=False):
-            d_interpolates = self.discriminator(interpolates)
-        # d_interpolates = self.discriminator(interpolates)
-        fake_outputs = torch.ones(d_interpolates.size(), device=self.device, requires_grad=False)
-        gradients = autograd.grad(
-            outputs=d_interpolates,
-            inputs=interpolates,
-            grad_outputs=fake_outputs,
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
-        gradients = gradients.reshape(batch_size, -1)
-        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
-        return gradient_penalty
-    
-    def discriminator_step(self, optimizerD, real_sequences, z):
-        # concatenates real and fake data
-        # this won't work if using batch norm
-        optimizerD.zero_grad(set_to_none=True)
-
-        # BCE loss (with logits)
-        if self.loss == 'bce':
-            batch_size = real_sequences.shape[0]
-            with torch.autocast(
-                device_type=self.device.type,
-                dtype=torch.bfloat16,
-                enabled=self.use_automatic_precision,
-            ):
-                fake_sequences = self.generator(z).detach()
-                combined_sequences = torch.concat(
-                    [fake_sequences, real_sequences],
-                    dim=0,
-                )
-                predictions = self.discriminator(combined_sequences).view(-1)
-                fake_labels = torch.zeros_like(predictions[:batch_size])
-                real_labels = torch.full_like(predictions[batch_size:], self.disc_real_label)
-                combined_labels = torch.concat(
-                    [fake_labels, real_labels],
-                    dim=0,
-                )
-                loss = self.criterion_bce(predictions, combined_labels)
-
-            # logging
-            predictions_fake_log = torch.sigmoid(predictions[:batch_size].detach().float()).mean()
-            predictions_real_log = torch.sigmoid(predictions[batch_size:].detach().float()).mean()
-
-        elif self.loss == 'wasserstein':
-            # TODO
-            pass
-
-        loss.backward()
-        if self.clip_grad_d:
-            nn.utils.clip_grad_norm_(
-                self.discriminator.parameters(),
-                max_norm=self.clip_grad_d,
-            )
-        optimizerD.step()
-        return loss.item(), predictions_fake_log.item(), predictions_real_log.item()
-    
-    def generator_step(self, optimizerG, z):
-        optimizerG.zero_grad(set_to_none=True)
-
-        # BCE loss (from logits)
-        if self.loss == 'bce':
-            with torch.autocast(
-                device_type=self.device.type,
-                dtype=torch.bfloat16,
-                enabled=self.use_automatic_precision,
-            ):
-                fake_sequences = self.generator(z)
-                predictions = self.discriminator(fake_sequences)
-                real_labels = torch.ones_like(predictions)
-                loss = self.criterion_bce(predictions, real_labels)
-                # loss = -nn.functional.logsigmoid(predictions).mean()
-            predictions_log = torch.sigmoid(predictions.detach().float()).mean()
-        elif self.loss == 'wasserstein':
-            # TODO
-            pass
-
-        loss.backward()
-        if self.clip_grad_g:
-            nn.utils.clip_grad_norm_(
-                self.generator.parameters(),
-                max_norm=self.clip_grad_g,
-            )
-        optimizerG.step()
-        return loss.item(), predictions_log.item()
-
-    def train(self, n_epochs, model_save_frequency):
-        optimizerG = torch.optim.Adam(
-            self.generator.parameters(),
-            lr=self.lr_g,
-            betas=self.betas_g,
-        )
-        optimizerD = torch.optim.Adam(
-            self.discriminator.parameters(),
-            lr=self.lr_d,
-            betas=self.betas_d,
-        )
-
-        total_steps = 0
-        history_G_losses = []
-        history_D_losses = []
-        # used to save sample sequences
-        static_z = torch.randn(64, *self.z_shape, device=self.device)
-
-        # preparing checkpoint directories
-        # at this point the main directory should be created
-        (self.state_dir / 'generator').mkdir(exist_ok=True)
-        (self.state_dir / 'discriminator').mkdir(exist_ok=True)
-        (self.state_dir / 'optim_generator').mkdir(exist_ok=True)
-        (self.state_dir / 'optim_discriminator').mkdir(exist_ok=True)
-        (self.state_dir / 'tsne').mkdir(exist_ok=True)
-        (self.state_dir / 'sample_sequences').mkdir(exist_ok=True)
-
-        # temporary solution
-        # TODO: fix
-        loss_G = 0.
-        D_G_z2 = 0.
-
-        print("Starting training loop...")
+    def train(self, n_epochs, save_freg, log_freq=100, print_freq=50, skip_plotting=False):
+        print('Starting training loop...')
+        global_step = 0
         for epoch in range(n_epochs):
+            self.generator.train()
+            self.discriminator.train()
             for i, data in enumerate(self.train_loader):
-                X, _ = data
+                (X,) = data
                 real_sequences = X.to(self.device)
                 batch_size = real_sequences.shape[0]
 
@@ -230,106 +76,158 @@ class GANTrainer(BaseTrainer):
                         self.bounded_dequantization,
                         self.actuator_idx
                     )
-
+                
                 # ==================================
                 # D training
                 # ==================================
 
                 set_requires_grad(self.discriminator, True)
-
-                z = torch.randn(batch_size, *self.z_shape, device=self.device)
-                loss_D, D_G_z1, D_x = self.discriminator_step(optimizerD, real_sequences, z)
+                d_metrics = self._discriminator_step(real_sequences)
 
                 # ==================================
                 # G training
                 # ==================================
 
                 set_requires_grad(self.discriminator, False)
-                # setting default values in case generator doesn't run in this iteration
-                loss_G = history_G_losses[-1] if len(history_G_losses) > 0 else 0.
-                D_G_z2 = D_G_z1
-
                 if (i + 1) % self.discriminator_rounds == 0:
                     for _ in range(self.generator_rounds):
-                        z = torch.randn(batch_size, *self.z_shape, device=self.device)
-                        loss_G, D_G_z2 = self.generator_step(optimizerG, z)
-
-                # output status
-                if i % 50 == 0:
-                    print(f'[{epoch}/{n_epochs}][{i}/{len(self.train_loader)}]', end='\t')
-                    print(f'Loss_D: {loss_D:.4f}', end='\t')
-                    print(f'Loss_G: {loss_G:.4f}', end='\t')
-                    print(f'D(x): {D_x:.4f}', end='\t')
-                    print(f'D(G(z)): {(D_G_z1+D_G_z2)/2:.4f}')
+                        g_metrics = self._generator_step(real_sequences)
                 
-                # save losses
-                history_G_losses.append(loss_G)
-                history_D_losses.append(loss_D)
+                # ==================================
+                # Logging
+                # ==================================
 
-            # save model checkpoints
-            if model_save_frequency and (epoch+1) % model_save_frequency == 0:
-                self.generator.eval()
-                self.save_model_checkpoints(optimizerG, optimizerD, epoch+1)
-                self.save_tsne(self.state_dir / 'tsne' / f'{epoch+1}.png', self.z_shape)
-                self.save_sample_sequences(self.generator(static_z).detach().cpu().numpy(), epoch+1)
-                self.generator.train()
+                if global_step % log_freq == 0:
+                    self._log_metrics(global_step, g_metrics, d_metrics)
+                global_step += 1
 
-        # saving final models
-        if not model_save_frequency or (n_epochs) % model_save_frequency != 0:
-            self.generator.eval()
-            self.save_model_checkpoints(optimizerG, optimizerD, n_epochs)
-            self.save_tsne(self.state_dir / 'tsne' / f'{n_epochs}.png', self.z_shape)
-            self.save_sample_sequences(self.generator(static_z).detach().cpu().numpy(), n_epochs+1)
-            self.generator.train()
+                if i % print_freq == 0:
+                    self._print_metrics(epoch, n_epochs, i, g_metrics, d_metrics)
 
-        # save training history
-        loss_history = {
-            'g_losses': history_G_losses,
-            'd_losses': history_D_losses
+            # ==================================
+            # Shceduled saving
+            # ==================================
+
+            if save_freg and (epoch+1) % save_freg == 0:
+                self._save_checkpoint(epoch+1, skip_plotting=skip_plotting)
+        
+        # ==================================
+        # Saving final checkpoint
+        # ==================================
+
+        if (not save_freg or (n_epochs) % save_freg != 0):
+            self._save_checkpoint(n_epochs, skip_plotting=skip_plotting)
+
+    def _discriminator_step(self, real_sequences):
+        self.optimizer_g.zero_grad(set_to_none=True)
+
+        batch_size = real_sequences.shape[0]
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16,
+            enabled=self.use_automatic_precision,
+        ):
+            z = torch.randn(batch_size, *self.z_shape, device=self.device)
+            fake_sequences = self.generator(z).detach()
+            combined_sequences = torch.concat(
+                [fake_sequences, real_sequences],
+                dim=0,
+            )
+            combined_predictions = self.discriminator(combined_sequences).view(-1)
+            combined_labels = torch.cat([
+                torch.zeros_like(combined_predictions[:batch_size]),
+                torch.full_like(combined_predictions[batch_size:], self.disc_real_label)
+            ], dim=0)
+            loss = self.criterion_bce(combined_predictions, combined_labels)
+
+        loss.backward()
+        if self.clip_grad_d:
+            nn.utils.clip_grad_norm_(
+                self.discriminator.parameters(),
+                max_norm=self.clip_grad_d,
+            )
+        self.optimizer_d.step()
+        return {
+            'd_loss': loss.item(),
+            'pred_fake': F.sigmoid(combined_predictions[:batch_size].detach().float()).mean().item(),
+            'pred_real' : F.sigmoid(combined_predictions[batch_size:].detach().float()).mean().item(),
         }
-
-        with open(self.state_dir / 'loss_history.json', 'w') as f:
-            json.dump(loss_history, f)
     
-    def test(self, test_loader, test_name):
-        tests_dir = self.state_dir / 'tests' / test_name
-        tests_dir.mkdir(parents=True, exist_ok=True)
+    def _generator_step(self, real_sequences):
+        self.optimizer_g.zero_grad(set_to_none=True)
 
-        mse = nn.MSELoss(reduction='none')
-        # mae = nn.L1Loss(reduction='none')
-        reduction_dim = 1 if self.time_last else 2
-        reconstruction_mse = None
-        discriminator_predictions = None
+        batch_size = real_sequences.shape[0]
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16,
+            enabled=self.use_automatic_precision,
+        ):
+            z = torch.randn(batch_size, *self.z_shape, device=self.device)
+            fake_sequences = self.generator(z)
+            predictions = self.discriminator(fake_sequences)
+            real_labels = torch.ones_like(predictions)
+            loss = self.criterion_bce(predictions, real_labels)
 
+        loss.backward()
+        if self.clip_grad_g:
+            nn.utils.clip_grad_norm_(
+                self.generator.parameters(),
+                max_norm=self.clip_grad_g,
+            )
+        self.optimizer_g.step()
+        return {
+            'g_loss': loss.item(),
+        }
+    
+    def _log_metrics(self, global_step, g_metrics, d_metrics):
+        self.writer.add_scalar('Loss/Discriminator', d_metrics['d_loss'], global_step)
+        self.writer.add_scalar('Loss/Generator', g_metrics['g_loss'], global_step)
+        self.writer.add_scalar('Predictions/Fake', d_metrics['pred_fake'], global_step)
+        self.writer.add_scalar('Predictions/Real', d_metrics['pred_real'], global_step)
+
+    def _print_metrics(self, epoch, n_epochs, step, g_metrics, d_metrics):
+        n_epochs = str(n_epochs)
+        epoch = f'{epoch:0{len(n_epochs)}}'
+        n_steps = str(len(self.train_loader))
+        step = f'{step:0{len(n_steps)}}'
+        print(f'[{epoch}/{n_epochs}][{step}/{n_steps}]', end=', ')
+        print(f'Loss_D: {d_metrics['d_loss']:.4f}', end=', ')
+        print(f'Loss_AE: {g_metrics['g_loss']:.4f}', end=', ')
+        print(f'D(X): {d_metrics['pred_real']:.4f}', end=', ')
+        print(f'D(G(X)): {d_metrics['pred_fake']:.4f}')
+
+    def _save_checkpoint(self, epoch, n_tsne=1000, skip_plotting=False):
+        # saving states
+        self.generator.save(self.state_dir / f'weights/generator/{epoch}.pth')
+        self.discriminator.save(self.state_dir / f'weights/discriminator/{epoch}.pth')
+        torch.save(self.optimizer_g.state_dict(), self.state_dir / f'weights/optimizer_g/{epoch}.pth')
+        torch.save(self.optimizer_d.state_dict(), self.state_dir / f'weights/optimizer_d/{epoch}.pth')
+        if skip_plotting:
+            return
+        # tsne TODO might move to logging instead
         self.generator.eval()
-        self.discriminator.eval()
+        real_samples = []
+        fake_samples = []
+        sample_count = 0
+        with torch.inference_mode(), torch.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16,
+            enabled=self.use_automatic_precision,
+        ):
+            for (X,) in self.train_loader:
+                torch.compiler.cudagraph_mark_step_begin()
 
-        for X, _ in test_loader:
-            X = X.to(self.device)
-            z = torch.randn(X.shape[0], *self.z_shape, device=self.device)
-            # get z
-            with torch.no_grad():
-                reconstruction = self.generator(z)
-                pred = self.discriminator(X)
-                if self.loss == 'bce':
-                    pred = nn.functional.sigmoid(pred)
-
-                current_mse = mse(reconstruction, X).mean(dim=reduction_dim)
-                if reconstruction_mse is None:
-                    reconstruction_mse = current_mse
-                else:
-                    reconstruction_mse = torch.concat([reconstruction_mse, current_mse], dim=0)
-                
-                if discriminator_predictions is None:
-                    discriminator_predictions = pred
-                else:
-                    discriminator_predictions = torch.concat([discriminator_predictions, pred], dim=0)
-
-        mse_map = map_anomaly_score_to_sequence(
-            np.array(reconstruction_mse),
-            self.window_size,
-            self.stride,
+                real_samples.append(X.clone().cpu())
+                z = torch.randn(X.shape[0], *self.z_shape, device=self.device)
+                fake_samples.append(self.generator(z).detach().cpu().float())
+                sample_count += X.shape[0]
+                if sample_count >= n_tsne:
+                    break
+        real_samples = (torch.cat(real_samples, dim=0)[:n_tsne])
+        fake_samples = torch.cat(fake_samples, dim=0)[:n_tsne]
+        plot_tsne(
+            torch.permute(real_samples, (0, 2, 1)),
+            torch.permute(fake_samples, (0, 2, 1)),
+            self.state_dir / f'tsne/{epoch}.png'
         )
-
-        np.save(tests_dir / 'mse.npy', mse_map)
-        return mse_map
+        # sample sequences TODO

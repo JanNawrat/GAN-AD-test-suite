@@ -10,7 +10,7 @@ class BaseTrainer():
             train_loader,
             feature_names=None,
             actuator_idx=None,
-        ):
+    ):
         self.device = torch.device(settings.device_name)
         self.state_dir = settings.paths.state_dir
         self.window_size = settings.params.window_size

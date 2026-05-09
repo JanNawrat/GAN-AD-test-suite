@@ -17,26 +17,12 @@ class AEGANTrainer(BaseTrainer):
             train_loader,
             feature_names=None,
             actuator_idx=None,
-        ):
+    ):
         super().__init__(settings, train_loader, feature_names, actuator_idx)
         # networks
-        if settings.params.compile_models:
-            self.encoder = torch.compile(
-                encoder,
-                mode=settings.params.compilation_mode,
-            )
-            self.decoder = torch.compile(
-                decoder,
-                mode=settings.params.compilation_mode,
-            )
-            self.discriminator = torch.compile(
-                discriminator,
-                mode=settings.params.compilation_mode,
-            )
-        else:
-            self.encoder = encoder
-            self.decoder = decoder
-            self.discriminator = discriminator
+        self.encoder = encoder
+        self.decoder = decoder
+        self.discriminator = discriminator
 
         # optimizers
         self.optimizer_ae = torch.optim.Adam(
@@ -73,7 +59,7 @@ class AEGANTrainer(BaseTrainer):
         # initializing tensorboard
         self.writer = SummaryWriter(log_dir=self.state_dir / 'logs')
 
-    def train(self, n_epochs, save_freq, log_freq=100, print_freq=50, skip_saving=False):
+    def train(self, n_epochs, save_freq, log_freq=100, print_freq=50, skip_plotting=False):
         print("Starting training loop...")
         global_step = 0
         for epoch in range(n_epochs):
@@ -81,7 +67,7 @@ class AEGANTrainer(BaseTrainer):
             self.decoder.train()
             self.discriminator.train()
             for i, data in enumerate(self.train_loader):
-                X, _ = data
+                (X,) = data
                 real_sequences = X.to(self.device)
                 batch_size = real_sequences.shape[0]
 
@@ -130,15 +116,15 @@ class AEGANTrainer(BaseTrainer):
             # Scheduled saving
             # ==================================
 
-            if not skip_saving and save_freq and (epoch+1) % save_freq == 0:
-                self._save_checkpoint(epoch+1)
+            if save_freq and (epoch+1) % save_freq == 0:
+                self._save_checkpoint(epoch+1, skip_plotting=skip_plotting)
                 
         # ==================================
         # Saving final checkpoint
         # ==================================
 
-        if not skip_saving and (not save_freq or (n_epochs) % save_freq != 0):
-            self._save_checkpoint(n_epochs)
+        if (not save_freq or (n_epochs) % save_freq != 0):
+            self._save_checkpoint(n_epochs, skip_plotting=skip_plotting)
 
     def _discriminator_step(self, real_sequences):
         self.optimizer_d.zero_grad(set_to_none=True)
@@ -235,33 +221,35 @@ class AEGANTrainer(BaseTrainer):
         print(f'D(X): {d_metrics['pred_real']:.4f}', end=', ')
         print(f'D(AE(X)): {d_metrics['pred_fake']:.4f}')
 
-    def _save_checkpoint(self, epoch, n_tsne=1000):
+    def _save_checkpoint(self, epoch, n_tsne=1000, skip_plotting=False):
         # saving states
         self.encoder.save(self.state_dir / f'weights/encoder/{epoch}.pth')
         self.decoder.save(self.state_dir / f'weights/decoder/{epoch}.pth')
         self.discriminator.save(self.state_dir / f'weights/discriminator/{epoch}.pth')
         torch.save(self.optimizer_ae.state_dict(), self.state_dir / f'weights/optimizer_ae/{epoch}.pth')
         torch.save(self.optimizer_d.state_dict(), self.state_dir / f'weights/optimizer_d/{epoch}.pth')
+        if skip_plotting:
+            return
         # tsne TODO might move to logging instead
         self.encoder.eval()
         self.decoder.eval()
         real_samples = []
         fake_samples = []
         sample_count = 0
-        with torch.no_grad(), torch.autocast(
+        with torch.inference_mode(), torch.autocast(
             device_type=self.device.type,
             dtype=torch.bfloat16,
             enabled=self.use_automatic_precision,
         ):
-            for X, _ in self.train_loader:
+            for (X,) in self.train_loader:
                 torch.compiler.cudagraph_mark_step_begin()
-                
+
                 real_samples.append(X.clone().cpu())
                 fake_samples.append(self.decoder(self.encoder(X.to(self.device))).detach().cpu().float())
                 sample_count += X.shape[0]
                 if sample_count >= n_tsne:
                     break
-        real_samples = torch.cat(real_samples, dim=0)[:n_tsne]
+        real_samples = (torch.cat(real_samples, dim=0)[:n_tsne])
         fake_samples = torch.cat(fake_samples, dim=0)[:n_tsne]
         plot_tsne(
             torch.permute(real_samples, (0, 2, 1)),
